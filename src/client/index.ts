@@ -5,6 +5,7 @@ export {
   targetFromLocation,
   type QAStoreOptions,
   type PersistedVerdict,
+  type PendingOp,
   type VerdictMap,
 } from "./store.js";
 export { ensureQAStyles } from "./styles.js";

@@ -48,7 +48,8 @@ export interface QAReviewOverlayProps {
   /**
    * Session-snapshot endpoint (e.g. "/api/qa/submit"). When set, the finish
    * panel shows a "Save review to database" button POSTing the full run there.
-   * When unset, the finish panel notes that verdicts were auto-saved as you go.
+   * The snapshot is OPTIONAL either way: per-item verdicts always persist to
+   * the state ledger in real time as they are decided.
    */
   submitUrl?: string;
   /** localStorage key builder. Default: `qa-review-verdicts:<target>`. */
@@ -260,7 +261,8 @@ export function QAReviewOverlay({
         ...prev,
         [current.id]: { id: current.id, title: current.title, verdict, note: trimmed, variant },
       }));
-      store.persist(current.id, { verdict, note: trimmed, variant }); // local + durable mirror
+      store.cancelPendingNote(current.id); // the verdict write carries the note
+      store.persist(current.id, { verdict, note: trimmed, variant }); // REAL-TIME durable mirror
       setUndoStack((s) => [...s, current.id]);
       // Advance within the FROZEN round (denominator stays fixed). The decided
       // item stays in the round so Prev can walk back to it; finish when past
@@ -396,11 +398,9 @@ export function QAReviewOverlay({
             <span className="qar-red">{rejected} rejected</span> · {total} total
           </p>
 
-          {!submitUrl && (
-            <p className="qar-finish-autosaved">
-              <Database size={14} aria-hidden /> Auto-saved to the review database as you go.
-            </p>
-          )}
+          <p className="qar-finish-autosaved">
+            <Database size={14} aria-hidden /> Auto-saved to the review database as you go.
+          </p>
 
           <div className="qar-finish-actions">
             {submitUrl && (
@@ -423,7 +423,7 @@ export function QAReviewOverlay({
             )}
             <button type="button" onClick={copyResults} className="qar-btn-outline-accent">
               <ClipboardCopy size={16} aria-hidden />
-              {copied ? "Copied!" : submitUrl ? "Copy JSON" : "Fallback: Copy JSON"}
+              {copied ? "Copied!" : "Copy JSON"}
             </button>
             {roundTotal > 0 && (
               <button
@@ -598,7 +598,12 @@ export function QAReviewOverlay({
           <textarea
             ref={noteRef}
             value={note}
-            onChange={(e) => setNote(e.target.value)}
+            onChange={(e) => {
+              setNote(e.target.value);
+              // REAL-TIME note persistence (debounced): typed notes reach the
+              // durable ledger even if the item is never re-verdicted.
+              if (current) store.persistNoteDebounced(current.id, e.target.value);
+            }}
             placeholder="Optional note (esp. on reject). Use 'Pick element' to reference a spot on the page…"
             rows={2}
             className="qar-note-input"
