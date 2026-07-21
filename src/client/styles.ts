@@ -106,6 +106,22 @@ export const QA_STYLES = `
 .qar-btn-outline:hover{background:#1e293b;}
 .qar-btn-ghost{border:none;background:none;border-radius:8px;padding:8px 16px;font-size:14px;color:#64748b;}
 .qar-btn-ghost:hover{color:#cbd5e1;}
+
+/* ---- misc ---- */
+.qar-muted{color:#64748b;font-weight:400;}
+
+/* ---- task-item action link ---- */
+.qar-action-link{margin-top:10px;display:inline-flex;align-items:center;gap:6px;border-radius:8px;
+  border:1px solid ${mix(40)};padding:6px 12px;font-size:12px;font-weight:700;color:${ACCENT};text-decoration:none;}
+.qar-action-link:hover{background:${mix(10)};}
+
+/* ---- journey summary ---- */
+.qar-journey{margin-top:14px;display:flex;flex-direction:column;gap:4px;text-align:left;font-size:12px;color:#cbd5e1;}
+.qar-journey-row{display:flex;justify-content:space-between;gap:12px;padding:2px 8px;border-radius:4px;}
+.qar-journey-row.qar-current{background:${mix(8)};}
+.qar-journey-left{color:${ACCENT};font-weight:700;}
+.qar-journey-done{color:#4ade80;}
+.qar-journey-nav{margin:6px 0 0;font-size:12px;color:#86efac;}
 `;
 
 const STYLE_ID = "qa-review-styles";

@@ -11,8 +11,19 @@ export interface QAReviewItem {
   title: string;
   /** Optional multi-line detail ("\n" renders as paragraph breaks). */
   sub?: string;
-  /** CSS selector for the element to spotlight on the real page (e.g. `[data-qa="hero"]`). */
-  selector: string;
+  /**
+   * CSS selector for the element to spotlight on the real page (e.g.
+   * `[data-qa="hero"]`). OMIT for an off-DOM "task item": it renders as a
+   * centered card (no spotlight) - for visit-this-page checks and decisions
+   * that have no single on-page anchor.
+   */
+  selector?: string;
+  /** Optional action link (task items): a button opening the URL in a new tab. */
+  action?: {
+    /** Button label. Default "Open". */
+    label?: string;
+    href: string;
+  };
   /** Which viewport(s) this item is about. */
   device?: QAReviewDevice;
   /** Optional grouping label. */
@@ -29,6 +40,11 @@ export interface QAReviewItem {
     /** Apply a variant on the real page (updates the page's own state). */
     onSelect: (variant: number) => void;
   };
+}
+
+/** Off-DOM "task item" = no selector: centered card, no spotlight. */
+export function isTaskItem(item: Pick<QAReviewItem, "selector">): boolean {
+  return !item.selector;
 }
 
 export type QAVerdict = "approve" | "reject";

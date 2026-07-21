@@ -9,6 +9,15 @@
 // re-appear mid-round and the counter counts up "1 of N" against a stable N.
 // 🚨 There is NO reset-all anywhere: the ledger is never bulk-wiped; a single
 // item is re-queued by invalidating just it (state POST with `verdict: null`).
+//
+// Extras:
+// - TASK ITEMS: an item without a `selector` renders as a centered card (no
+//   spotlight) with an optional action link - for visit-this-page checks and
+//   decisions with no on-page anchor. Same verdict/undo/note flow.
+// - JOURNEY: an ordered multi-page review. When this page's round is done, the
+//   overlay shows per-page pending counts and AUTO-NAVIGATES to the next page
+//   with pending items, preserving the activation query params (gate param,
+//   auth key, ...) across the full page load.
 
 import * as React from "react";
 import { createPortal } from "react-dom";
@@ -24,14 +33,26 @@ import {
   Undo2,
   Crosshair,
   Locate,
+  ExternalLink,
 } from "lucide-react";
 import type { QAReviewItem, QAResult, QATheme, QAVerdict, QASubmission } from "./types.js";
+import { isTaskItem } from "./types.js";
 import { QAStore, type VerdictMap } from "./store.js";
+import {
+  buildJourneyNavUrl,
+  fetchPendingCounts,
+  journeyIndex,
+  nextPendingPage,
+  type QAJourneyConfig,
+  type QAJourneyPage,
+} from "./journey.js";
 import { ensureQAStyles } from "./styles.js";
 
 const RING = 8; // px padding of the spotlight around the target
 const CARD_W = 340;
 const CARD_H = 544;
+const AUTO_NAV_DELAY_MS = 3000;
+const DEFAULT_STATE_URL = "/api/qa/state";
 
 export interface QAReviewOverlayProps {
   items: QAReviewItem[];
@@ -56,6 +77,12 @@ export interface QAReviewOverlayProps {
   storageKey?: (target: string) => string;
   /** Brand colors for the overlay chrome (defaults are a dark yellow theme). */
   theme?: Partial<QATheme>;
+  /**
+   * Cross-page review journey (ordered pages with their ledger targets +
+   * item ids). The page whose `target` equals this overlay's `target` is the
+   * current journey position.
+   */
+  journey?: QAJourneyConfig;
 }
 
 type Rect = { top: number; left: number; width: number; height: number };
@@ -69,6 +96,7 @@ export function QAReviewOverlay({
   submitUrl,
   storageKey,
   theme,
+  journey,
 }: QAReviewOverlayProps) {
   // Stable per-target store. storageKey is captured on first render by design.
   const storageKeyRef = React.useRef(storageKey);
@@ -103,6 +131,14 @@ export function QAReviewOverlay({
   const [peeking, setPeeking] = React.useState(false);
   // Stack of item ids in the order they were decided, for Undo.
   const [undoStack, setUndoStack] = React.useState<string[]>([]);
+  // Journey: pending counts per target + the auto-navigation target page.
+  const [journeyCounts, setJourneyCounts] = React.useState<Record<string, number> | null>(null);
+  const [navPage, setNavPage] = React.useState<QAJourneyPage | null>(null);
+  const [navCancelled, setNavCancelled] = React.useState(false);
+
+  const journeyIdx = journey ? journeyIndex(journey.pages, target) : -1;
+  const inJourney = !!journey && journeyIdx >= 0;
+
   const peek = React.useCallback(() => {
     setPeeking(true);
     window.setTimeout(() => setPeeking(false), 3000);
@@ -165,12 +201,14 @@ export function QAReviewOverlay({
   }, [items, roundIds]);
   const roundTotal = roundItems.length;
   const current = roundItems[index] as QAReviewItem | undefined;
+  const currentIsTask = !!current && isTaskItem(current);
 
   // Track the target element's rect: scroll it into view when the step changes,
-  // then keep the spotlight glued to it on scroll/resize.
+  // then keep the spotlight glued to it on scroll/resize. Task items (no
+  // selector) render as a centered card over a full-page dim instead.
   React.useEffect(() => {
     if (!active || finished || !current) return;
-    const el = document.querySelector<HTMLElement>(current.selector);
+    const el = current.selector ? document.querySelector<HTMLElement>(current.selector) : null;
     if (!el) {
       // Clear inside a frame (not synchronously in the effect body): avoids a
       // cascading render per the react-hooks lint.
@@ -295,18 +333,29 @@ export function QAReviewOverlay({
 
   // Jump: scroll the currently-spotlighted target back into view.
   const jump = React.useCallback(() => {
-    if (!current) return;
+    if (!current?.selector) return;
     document.querySelector(current.selector)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [current]);
 
+  // Full-page journey hop, preserving the QA activation query params.
+  const navigateTo = React.useCallback((page: QAJourneyPage) => {
+    window.location.assign(buildJourneyNavUrl(page.path, window.location.search));
+  }, []);
+
+  const prevJourneyPage = inJourney && journeyIdx > 0 ? journey!.pages[journeyIdx - 1] : null;
+
   // Prev/Next step within the frozen round (approved/unchanged items are not in
-  // the round, so they never re-appear).
+  // the round, so they never re-appear). With a journey: Prev at the first item
+  // goes back to the previous journey page; Next past the last item opens the
+  // finish/journey panel.
   const prev = React.useCallback(() => {
     if (index > 0) setIndex(index - 1);
-  }, [index]);
+    else if (prevJourneyPage) navigateTo(prevJourneyPage);
+  }, [index, prevJourneyPage, navigateTo]);
   const next = React.useCallback(() => {
     if (index + 1 < roundTotal) setIndex(index + 1);
-  }, [index, roundTotal]);
+    else if (inJourney) setFinished(true);
+  }, [index, roundTotal, inJourney]);
   const exit = React.useCallback(() => setActive(false), []);
 
   // Keyboard: A approve, R reject, ←/→ prev/next, U/Ctrl+Z undo, Esc exit.
@@ -324,6 +373,34 @@ export function QAReviewOverlay({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [active, finished, record, next, prev, exit, undo]);
+
+  // Journey: when this page's round is done, fetch pending counts for every
+  // journey page (one state GET per target; the CURRENT page uses live local
+  // results) and pick the next page that still needs review.
+  React.useEffect(() => {
+    if (!finished || !active || !inJourney) return;
+    let cancelled = false;
+    void (async () => {
+      const counts = await fetchPendingCounts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages);
+      if (cancelled) return;
+      counts[target] = items.filter((i) => results[i.id]?.verdict !== "approve").length;
+      setJourneyCounts(counts);
+      setNavPage(nextPendingPage(journey!.pages, counts, journeyIdx));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Refresh only when the panel opens; results are frozen while it shows.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finished, active, inJourney]);
+
+  // Journey: auto-navigate to the next pending page after a short, cancellable
+  // countdown ("Stay on this page" keeps the finish panel).
+  React.useEffect(() => {
+    if (!finished || !active || !navPage || navCancelled) return;
+    const t = window.setTimeout(() => navigateTo(navPage), AUTO_NAV_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [finished, active, navPage, navCancelled, navigateTo]);
 
   const buildPayload = React.useCallback((): QASubmission => {
     const merged = items.map(
@@ -388,28 +465,74 @@ export function QAReviewOverlay({
 
   /* ------------------------------ finish panel ------------------------------ */
   if (finished) {
+    const journeyDone = inJourney && journeyCounts && !navPage;
     return createPortal(
       <div className="qar-theme qar-finish-backdrop" style={themeStyle}>
         <div className="qar-finish-card">
           <PartyPopper className="qar-finish-icon" size={40} aria-hidden />
-          <h2 className="qar-finish-title">QA review complete</h2>
+          <h2 className="qar-finish-title">
+            {journeyDone ? "Journey complete" : inJourney ? "Page complete" : "QA review complete"}
+          </h2>
           <p className="qar-finish-stats">
             <span className="qar-green">{approved} approved</span> ·{" "}
             <span className="qar-red">{rejected} rejected</span> · {total} total
+            {inJourney && <span className="qar-muted"> (this page)</span>}
           </p>
 
           <p className="qar-finish-autosaved">
             <Database size={14} aria-hidden /> Auto-saved to the review database as you go.
           </p>
 
+          {inJourney && (
+            <div className="qar-journey">
+              {!journeyCounts && <p className="qar-journey-nav">Checking the other pages…</p>}
+              {journeyCounts &&
+                journey!.pages.map((p, i) => {
+                  const left = journeyCounts[p.target] ?? 0;
+                  return (
+                    <div key={p.target} className={`qar-journey-row${i === journeyIdx ? " qar-current" : ""}`}>
+                      <span>
+                        {p.label ?? p.path}
+                        {i === journeyIdx ? " (here)" : ""}
+                      </span>
+                      <span className={left === 0 ? "qar-journey-done" : "qar-journey-left"}>
+                        {left === 0 ? "✓ done" : `${left} left`}
+                      </span>
+                    </div>
+                  );
+                })}
+              {navPage && !navCancelled && (
+                <p className="qar-journey-nav">
+                  Continuing to {navPage.label ?? navPage.path} (page{" "}
+                  {journeyIndex(journey!.pages, navPage.target) + 1} of {journey!.pages.length})…
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="qar-finish-actions">
+            {navPage && !navCancelled && (
+              <>
+                <button type="button" onClick={() => navigateTo(navPage)} className="qar-btn-primary">
+                  <ChevronRight size={16} aria-hidden /> Go now
+                </button>
+                <button type="button" onClick={() => setNavCancelled(true)} className="qar-btn-outline">
+                  Stay on this page
+                </button>
+              </>
+            )}
+            {navPage && navCancelled && (
+              <button type="button" onClick={() => navigateTo(navPage)} className="qar-btn-primary">
+                <ChevronRight size={16} aria-hidden /> Continue to {navPage.label ?? navPage.path}
+              </button>
+            )}
             {submitUrl && (
               <>
                 <button
                   type="button"
                   onClick={saveToDb}
                   disabled={save.status === "saving" || save.status === "ok"}
-                  className="qar-btn-primary"
+                  className={navPage && !navCancelled ? "qar-btn-outline-accent" : "qar-btn-primary"}
                 >
                   <Database size={16} aria-hidden />
                   {save.status === "saving"
@@ -452,21 +575,26 @@ export function QAReviewOverlay({
   if (peeking) return null; // 3s clean-page peek; chrome returns automatically
 
   // Panel is pinned to the LEFT by default (so it never obscures the page) and
-  // can be dragged anywhere by its header.
-  const cardTop = pos?.y ?? 24;
-  const cardLeft = pos?.x ?? 16;
+  // can be dragged anywhere by its header. TASK items center it instead (there
+  // is no spotlighted element to avoid).
+  const cardStyle: React.CSSProperties = pos
+    ? { top: pos.y, left: pos.x }
+    : currentIsTask
+      ? { top: "50%", left: "50%", transform: "translate(-50%, -50%)" }
+      : { top: 24, left: 16 };
 
   const existing = results[current.id]?.verdict;
   const approvedCount = items.filter((it) => results[it.id]?.verdict === "approve").length;
   // Decided-this-round = round items that now carry a verdict (counts up 0..roundTotal).
   const decidedInRound = roundItems.filter((it) => results[it.id]?.verdict).length;
-  const hasNext = index < roundTotal - 1;
-  const hasPrev = index > 0;
+  const hasNext = index < roundTotal - 1 || inJourney;
+  const hasPrev = index > 0 || !!prevJourneyPage;
 
   return createPortal(
     <>
-      {/* Spotlight: a box-shadow-spread dim over everything except the target. */}
-      {rect ? (
+      {/* Spotlight: a box-shadow-spread dim over everything except the target.
+          Task items get a plain full-page dim (no spotlight hole). */}
+      {rect && !currentIsTask ? (
         <div
           aria-hidden
           className="qar-theme qar-spotlight"
@@ -486,7 +614,7 @@ export function QAReviewOverlay({
       <div
         ref={cardRef}
         className="qar-theme qar-card"
-        style={{ ...themeStyle, top: cardTop, left: cardLeft, width: CARD_W, height: CARD_H }}
+        style={{ ...themeStyle, ...cardStyle, width: CARD_W, height: CARD_H }}
       >
         <div
           className="qar-card-header"
@@ -496,18 +624,26 @@ export function QAReviewOverlay({
         >
           <span className="qar-counter">
             {index + 1} of {roundTotal} to review
+            {inJourney && (
+              <span className="qar-muted">
+                {" "}
+                · page {journeyIdx + 1}/{journey!.pages.length}
+              </span>
+            )}
           </span>
           <span className="qar-header-tools">
             {current.device && <span>{current.device}</span>}
-            <button
-              type="button"
-              onClick={jump}
-              aria-label="Jump to the highlighted section"
-              title="Jump: scroll to the highlighted section"
-              className="qar-tool-btn"
-            >
-              <Locate size={14} />
-            </button>
+            {!currentIsTask && (
+              <button
+                type="button"
+                onClick={jump}
+                aria-label="Jump to the highlighted section"
+                title="Jump: scroll to the highlighted section"
+                className="qar-tool-btn"
+              >
+                <Locate size={14} />
+              </button>
+            )}
             <button
               type="button"
               onClick={undo}
@@ -536,7 +672,7 @@ export function QAReviewOverlay({
         {/* Scrollable middle so the card keeps a STATIC height and the action
             buttons below stay pinned in the same place for every item. */}
         <div className="qar-card-body">
-          {!rect && (
+          {!rect && !currentIsTask && (
             <p className="qar-warn">
               Target not on this viewport ({current.selector}) - may be a mobile-only element.
             </p>
@@ -553,6 +689,17 @@ export function QAReviewOverlay({
                   <p key={i}>{line}</p>
                 ))}
             </div>
+          )}
+
+          {current.action && (
+            <a
+              className="qar-action-link"
+              href={current.action.href}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink size={14} aria-hidden /> {current.action.label ?? "Open"}
+            </a>
           )}
 
           {existing && (
@@ -611,7 +758,14 @@ export function QAReviewOverlay({
         </div>
 
         <div className="qar-actions">
-          <button type="button" onClick={prev} disabled={!hasPrev} aria-label="Previous item" className="qar-nav-btn">
+          <button
+            type="button"
+            onClick={prev}
+            disabled={!hasPrev}
+            aria-label="Previous item"
+            title={index === 0 && prevJourneyPage ? `Back to ${prevJourneyPage.label ?? prevJourneyPage.path}` : "Previous item"}
+            className="qar-nav-btn"
+          >
             <ChevronLeft size={16} />
           </button>
           <button type="button" onClick={() => record("reject")} className="qar-reject-btn">
@@ -620,7 +774,14 @@ export function QAReviewOverlay({
           <button type="button" onClick={() => record("approve")} className="qar-approve-btn">
             <Check size={16} /> Approve
           </button>
-          <button type="button" onClick={next} disabled={!hasNext} aria-label="Next item" className="qar-nav-btn">
+          <button
+            type="button"
+            onClick={next}
+            disabled={!hasNext}
+            aria-label="Next item"
+            title={index >= roundTotal - 1 && inJourney ? "Finish this page (journey summary)" : "Next item"}
+            className="qar-nav-btn"
+          >
             <ChevronRight size={16} />
           </button>
         </div>

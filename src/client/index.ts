@@ -8,7 +8,17 @@ export {
   type PendingOp,
   type VerdictMap,
 } from "./store.js";
+export {
+  journeyIndex,
+  countPending,
+  nextPendingPage,
+  buildJourneyNavUrl,
+  fetchPendingCounts,
+  type QAJourneyConfig,
+  type QAJourneyPage,
+} from "./journey.js";
 export { ensureQAStyles } from "./styles.js";
+export { isTaskItem } from "./types.js";
 export type {
   QAReviewItem,
   QAReviewDevice,

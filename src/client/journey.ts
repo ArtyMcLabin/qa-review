@@ -1,0 +1,96 @@
+// Cross-page journey support: pure helpers (unit-tested) used by the overlay
+// to compute per-page pending counts from the durable ledger, pick the next
+// page that still needs review, and build navigation URLs that PRESERVE the
+// QA activation params (gate param, auth key, etc.) across a full page load.
+
+import type { VerdictMap } from "./store.js";
+
+export interface QAJourneyPage {
+  /** Pathname to navigate to (e.g. "/pricing"). */
+  path: string;
+  /** Ledger bucket for that page (e.g. "example-site:/pricing"). */
+  target: string;
+  /** Human label for the journey summary. Default: path. */
+  label?: string;
+  /** ALL reviewable item ids on that page (pending = not approved in ledger). */
+  itemIds: string[];
+}
+
+export interface QAJourneyConfig {
+  /** Ordered pages of the review journey. */
+  pages: QAJourneyPage[];
+}
+
+/** Index of the journey page whose target matches, or -1. */
+export function journeyIndex(pages: readonly QAJourneyPage[], target: string): number {
+  return pages.findIndex((p) => p.target === target);
+}
+
+/**
+ * Pending = items NOT approved in the ledger map (unreviewed OR rejected) -
+ * mirrors the overlay's round-freeze rule. An empty/missing map counts every
+ * item as pending (never silently skips a page).
+ */
+export function countPending(itemIds: readonly string[], map: VerdictMap | null | undefined): number {
+  return itemIds.filter((id) => map?.[id]?.verdict !== "approve").length;
+}
+
+/**
+ * Next journey page (excluding the current one) with pending items: searches
+ * FORWARD from the current page and wraps around, so a mid-journey start still
+ * covers earlier pages. Returns null when the whole journey is clean.
+ */
+export function nextPendingPage(
+  pages: readonly QAJourneyPage[],
+  pendingByTarget: Readonly<Record<string, number>>,
+  currentIndex: number,
+): QAJourneyPage | null {
+  for (let step = 1; step < pages.length; step++) {
+    const p = pages[(currentIndex + step + pages.length) % pages.length];
+    if ((pendingByTarget[p.target] ?? 0) > 0) return p;
+  }
+  return null;
+}
+
+/**
+ * Build the navigation URL for a journey hop, preserving the current page's
+ * query params (QA gate param, auth key, ...) so activation survives the full
+ * page load. The per-page `target` override is dropped - the arriving page
+ * derives its own bucket.
+ */
+export function buildJourneyNavUrl(path: string, currentSearch: string): string {
+  const params = new URLSearchParams(currentSearch);
+  params.delete("target");
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+/**
+ * Fetch the ledger for every journey page (one state GET per target) and
+ * return pending counts. A failed fetch counts that page's items as pending
+ * (never lose a page silently).
+ */
+export async function fetchPendingCounts(
+  stateUrl: string,
+  pages: readonly QAJourneyPage[],
+): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  await Promise.all(
+    pages.map(async (p) => {
+      let map: VerdictMap | null = null;
+      try {
+        const r = await fetch(`${stateUrl}?target=${encodeURIComponent(p.target)}`, {
+          cache: "no-store",
+        });
+        if (r.ok) {
+          const d = (await r.json()) as { ok?: boolean; verdicts?: VerdictMap };
+          if (d?.ok && d.verdicts) map = d.verdicts;
+        }
+      } catch {
+        map = null;
+      }
+      out[p.target] = countPending(p.itemIds, map);
+    }),
+  );
+  return out;
+}

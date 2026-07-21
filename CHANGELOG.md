@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 - 2026-07-21
+
+- JOURNEY: cross-page review flow. `journey` prop (ordered pages with path /
+  target / label / itemIds): when a page's round is done the finish panel shows
+  per-page pending counts (one state GET per target; failed fetch = page counts
+  as pending) and auto-navigates (3s, cancellable) to the next page with
+  pending items - wrapping past the end, never the current page. Activation
+  query params (gate param, auth key) are preserved on the hop; the per-page
+  `target` override is dropped. Prev at the first item goes back to the
+  previous journey page; Next past the last item opens the journey summary.
+  Header shows "page X/N" progress.
+- TASK ITEMS: `selector` is now optional - an item without one renders as a
+  centered card (no spotlight, full-page dim) with an optional `action` link
+  button (new tab). Same approve/reject/note/undo + real-time persistence.
+
 ## 0.1.1 - 2026-07-21
 
 - REAL-TIME persistence unified across consumers (SSoT fix): every
