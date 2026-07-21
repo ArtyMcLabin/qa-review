@@ -24,6 +24,11 @@ export {
   fetchPendingCounts,
   resolveFinishAction,
   journeyFinishView,
+  shouldPrefetch,
+  isPrefetchFresh,
+  ensurePrefetchLink,
+  PREFETCH_WINDOW_ITEMS,
+  PREFETCH_MAX_AGE_MS,
   type FinishAction,
   type QAJourneyConfig,
   type QAJourneyPage,
@@ -48,6 +53,13 @@ export {
 } from "./device.js";
 export { findMatchRanges, applySubHighlights, type MatchRange } from "./highlight.js";
 export { describeRevisit, type RevisitInfo, type RevisitDisplay } from "./revisit.js";
+export {
+  buildMobilePreviewUrl,
+  isEmbeddedPreview,
+  MOBILE_PREVIEW_WIDTH,
+  MOBILE_PREVIEW_HEIGHT,
+  PREVIEW_MARKER_PARAM,
+} from "./preview.js";
 export {
   codenameFor,
   findByCodename,

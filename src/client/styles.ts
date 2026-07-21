@@ -184,6 +184,21 @@ mark.qar-subhl{background:color-mix(in srgb, var(--qar-accent, #ffde4d) 40%, tra
 .qar-revisit{margin:8px 0 0;border-radius:6px;border:1px solid ${mix(55)};background:${mix(12)};
   padding:6px 8px;font-size:12px;font-weight:700;color:${ACCENT};}
 .qar-revisit-prior{margin:6px 0 0;font-size:11px;color:#94a3b8;}
+
+/* ---- 0.3.5: round-scoped counters ---- */
+.qar-finish-alltime{margin:6px 0 0;font-size:11px;color:#64748b;}
+
+/* ---- 0.3.5: mobile preview ---- */
+.qar-preview-backdrop{position:fixed;inset:0;z-index:99997;display:flex;align-items:center;
+  justify-content:center;background:rgba(0,0,0,.82);}
+.qar-preview-frame{position:relative;width:390px;max-width:96vw;height:min(844px,90vh);
+  border-radius:24px;border:2px solid ${mix(50)};background:#000;overflow:hidden;
+  box-shadow:0 0 60px -12px ${mix(60)};}
+.qar-preview-frame iframe{display:block;width:100%;height:100%;border:0;background:#fff;}
+.qar-preview-close{position:absolute;top:8px;right:8px;display:inline-flex;align-items:center;
+  justify-content:center;width:28px;height:28px;border-radius:9999px;border:1px solid ${mix(60)};
+  background:${PANEL};color:${ACCENT};}
+.qar-preview-close:hover{filter:brightness(1.2);}
 `;
 
 const STYLE_ID = "qa-review-styles";

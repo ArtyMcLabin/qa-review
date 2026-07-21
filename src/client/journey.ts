@@ -118,6 +118,45 @@ export function buildJourneyNavUrl(path: string, currentSearch: string): string 
   return qs ? `${path}?${qs}` : path;
 }
 
+/** Within how many final round items the journey prefetch kicks in. */
+export const PREFETCH_WINDOW_ITEMS = 2;
+/** Prefetched counts older than this are considered stale. */
+export const PREFETCH_MAX_AGE_MS = 30_000;
+
+/** Should the background prefetch start? (within the final N round items) */
+export function shouldPrefetch(
+  index: number,
+  roundTotal: number,
+  windowItems: number = PREFETCH_WINDOW_ITEMS,
+): boolean {
+  return roundTotal > 0 && roundTotal - index <= windowItems;
+}
+
+/** Is a prefetched result still fresh enough to navigate on? */
+export function isPrefetchFresh(
+  fetchedAt: number,
+  now: number,
+  maxAgeMs: number = PREFETCH_MAX_AGE_MS,
+): boolean {
+  return now - fetchedAt >= 0 && now - fetchedAt < maxAgeMs;
+}
+
+/**
+ * Warm the next journey page: add an idempotent <link rel="prefetch"> for the
+ * nav URL so the browser can fetch the document ahead of the hop. Best-effort
+ * hint - browsers may ignore it.
+ */
+export function ensurePrefetchLink(doc: Document, href: string): void {
+  const existing = Array.from(doc.querySelectorAll('link[data-qar-prefetch="1"]'));
+  if (existing.some((l) => l.getAttribute("href") === href)) return;
+  const link = doc.createElement("link");
+  link.rel = "prefetch";
+  link.href = href;
+  link.as = "document";
+  link.setAttribute("data-qar-prefetch", "1");
+  doc.head.appendChild(link);
+}
+
 /**
  * Fetch the ledger for every journey page (one state GET per target) and
  * return NAVIGATION-pending counts (unverdicted items - see countUnverdicted;

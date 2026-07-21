@@ -49,15 +49,19 @@ import {
   Smartphone,
   ClipboardCheck,
 } from "lucide-react";
-import type { QAReviewItem, QAResult, QATheme, QASubmission } from "./types.js";
+import type { QAReviewItem, QAResult, QATheme, QAVerdict, QASubmission } from "./types.js";
 import { isTaskItem } from "./types.js";
 import { QAStore, type VerdictMap } from "./store.js";
 import {
   buildJourneyNavUrl,
+  ensurePrefetchLink,
   fetchPendingCounts,
+  isPrefetchFresh,
   journeyFinishView,
   journeyIndex,
+  nextPendingPage,
   resolveFinishAction,
+  shouldPrefetch,
   type QAJourneyConfig,
   type QAJourneyPage,
 } from "./journey.js";
@@ -74,6 +78,12 @@ import {
 } from "./device.js";
 import { applySubHighlights } from "./highlight.js";
 import { describeRevisit, type RevisitInfo } from "./revisit.js";
+import {
+  MOBILE_PREVIEW_HEIGHT,
+  MOBILE_PREVIEW_WIDTH,
+  buildMobilePreviewUrl,
+  isEmbeddedPreview,
+} from "./preview.js";
 import { codenameFor, formatQARef } from "../shared/codename.js";
 import { ensureQAStyles } from "./styles.js";
 
@@ -210,7 +220,9 @@ export function QAReviewOverlay({
     [target, stateUrl],
   );
 
-  const [active, setActive] = React.useState(!gateParam);
+  // Inside the mobile-preview iframe the overlay stays DORMANT (no nested chrome).
+  const embedded = typeof window !== "undefined" && isEmbeddedPreview(window.location.search);
+  const [active, setActive] = React.useState(!gateParam && !embedded);
   const [hydrated, setHydrated] = React.useState(false);
   const [index, setIndex] = React.useState(0);
   const [results, setResults] = React.useState<Record<string, QAResult>>({});
@@ -252,6 +264,12 @@ export function QAReviewOverlay({
   const [journeyComplete, setJourneyComplete] = React.useState(false);
   // The journey page a full-page navigation is in flight to (loading label).
   const [navigatingTo, setNavigatingTo] = React.useState<QAJourneyPage | null>(null);
+  // Prefetched journey pending counts (warmed near the end of the round).
+  const prefetchRef = React.useRef<{ counts: Record<string, number>; at: number } | null>(null);
+  // Verdicts recorded in THIS session/run (round-scoped counters).
+  const [sessionVerdicts, setSessionVerdicts] = React.useState<Record<string, QAVerdict>>({});
+  // Phone-sized same-origin preview of the current page (Approve Mobile on desktop).
+  const [mobilePreview, setMobilePreview] = React.useState(false);
 
   const journeyIdx = journey ? journeyIndex(journey.pages, target) : -1;
   const inJourney = !!journey && journeyIdx >= 0;
@@ -259,9 +277,10 @@ export function QAReviewOverlay({
 
   // Optional opt-in gate (URL param), read on mount so SSR stays static.
   React.useEffect(() => {
-    if (!gateParam) return;
+    if (!gateParam || embedded) return;
     const params = new URLSearchParams(window.location.search);
     if (params.has(gateParam)) setActive(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gateParam]);
 
   // Mirror the theme vars onto <html> so styles applied to PAGE content (the
@@ -372,7 +391,7 @@ export function QAReviewOverlay({
   // then keep the spotlight glued to it on scroll/resize. Task items (no
   // selector) render as a centered card over a full-page dim instead.
   React.useEffect(() => {
-    if (!active || finished || minimized || !current) return;
+    if (!active || finished || minimized || mobilePreview || !current) return;
     const el = current.selector ? document.querySelector<HTMLElement>(current.selector) : null;
     if (!el) {
       const clear = requestAnimationFrame(() => setRect(null));
@@ -387,7 +406,7 @@ export function QAReviewOverlay({
     };
     raf = requestAnimationFrame(measure);
     return () => cancelAnimationFrame(raf);
-  }, [active, finished, minimized, current, index]);
+  }, [active, finished, minimized, mobilePreview, current, index]);
 
   // SYSTEM-COMPUTED live fingerprint of the current item (drives the
   // NOT-ALTERED badge - never an agent's claim).
@@ -399,11 +418,12 @@ export function QAReviewOverlay({
   // SUB-HIGHLIGHT: wrap the configured words/phrases inside the anchored
   // element; fully restored when the step changes.
   React.useEffect(() => {
-    if (!active || finished || minimized || !current?.selector || !current.highlightWords?.length) return;
+    if (!active || finished || minimized || mobilePreview || !current?.selector || !current.highlightWords?.length)
+      return;
     const el = document.querySelector<HTMLElement>(current.selector);
     if (!el) return;
     return applySubHighlights(el, current.highlightWords);
-  }, [active, finished, minimized, current]);
+  }, [active, finished, minimized, mobilePreview, current]);
 
   // Restore any existing note when revisiting a step. keepNoteRef (set by Undo)
   // wins once so Undo keeps what was typed instead of wiping the textarea.
@@ -501,6 +521,7 @@ export function QAReviewOverlay({
     if (fp) setFps((prev) => ({ ...prev, [current.id]: fp }));
     store.cancelPendingNote(current.id); // the verdict write carries the note
     store.persist(current.id, { verdict: "reject", note: trimmed, variant, fp }); // REAL-TIME
+    setSessionVerdicts((prev) => ({ ...prev, [current.id]: "reject" }));
     setUndoStack((s) => [...s, current.id]);
     advance();
   }, [current, note, currentFp, store, advance]);
@@ -549,6 +570,7 @@ export function QAReviewOverlay({
           return next;
         });
         store.persist(current.id, { verdict: "approve", note: trimmed, variant, fp, approvedDevices: newDevs });
+        setSessionVerdicts((prev) => ({ ...prev, [current.id]: "approve" }));
         advance();
         return;
       }
@@ -560,6 +582,12 @@ export function QAReviewOverlay({
         return next;
       });
       setPartials((prev) => ({ ...prev, [current.id]: newDevs }));
+      setSessionVerdicts((prev) => {
+        if (!prev[current.id]) return prev;
+        const next = { ...prev };
+        delete next[current.id]; // partial / unset = no session verdict
+        return next;
+      });
       if (action === "unset" && wasFullyApproved) {
         // The row's verdict must clear: delete it, then re-write the fields we
         // still know (note/variant/fp + remaining devices). The write-behind
@@ -587,6 +615,11 @@ export function QAReviewOverlay({
         return next;
       });
       setPartials((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setSessionVerdicts((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -624,6 +657,13 @@ export function QAReviewOverlay({
   }, [index, roundTotal, inJourney]);
   const exit = React.useCallback(() => setActive(false), []);
 
+  // Same-origin phone-frame URL of the CURRENT page (embed marker keeps the
+  // iframe's own overlay dormant). Recomputed each time the preview opens.
+  const previewUrl = React.useMemo(
+    () => (mobilePreview && typeof window !== "undefined" ? buildMobilePreviewUrl(window.location.href) : null),
+    [mobilePreview],
+  );
+
   // The device whose approval is most actionable NOW (visual hint + "A" key):
   // the detected device if required and unapproved, else the first unapproved
   // required device. ALL buttons stay clickable regardless.
@@ -654,9 +694,41 @@ export function QAReviewOverlay({
     return () => window.removeEventListener("keydown", onKey);
   }, [active, finished, minimized, reject, approveDevice, hintDevice, next, prev, exit, undo]);
 
+  // Live NAVIGATION count of the current page (unverdicted = untouched this
+  // run; rejects/partials are handled - see 0.3.2).
+  const liveCurrentPending = React.useCallback(
+    () => items.filter((i) => !results[i.id]?.verdict && !partials[i.id]?.length).length,
+    [items, results, partials],
+  );
+
+  // JOURNEY PRELOAD (0.3.5): within the final items of the round, prefetch
+  // the other pages' pending counts in the background and warm the likely
+  // next page with a <link rel="prefetch"> - so round exhaustion navigates
+  // instantly instead of sitting on "Checking remaining pages…".
+  React.useEffect(() => {
+    if (!active || finished || !inJourney) return;
+    if (!shouldPrefetch(index, roundTotal)) return;
+    if (prefetchRef.current && isPrefetchFresh(prefetchRef.current.at, Date.now())) return;
+    let cancelled = false;
+    void (async () => {
+      const counts = await fetchPendingCounts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages);
+      if (cancelled) return;
+      prefetchRef.current = { counts, at: Date.now() };
+      const withLive = { ...counts, [target]: liveCurrentPending() };
+      const next = nextPendingPage(journey!.pages, withLive, journeyIdx);
+      if (next) ensurePrefetchLink(document, buildJourneyNavUrl(next.path, window.location.search));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, finished, inJourney, index, roundTotal]);
+
   // Journey: the moment this page's round is done, resolve the next step and
-  // navigate IMMEDIATELY (no interstitial, no success popup). The completion
-  // panel shows ONLY when nothing is pending anywhere in the journey.
+  // navigate IMMEDIATELY (no interstitial, no success popup). Uses the
+  // PREFETCHED counts when fresh (instant hop); falls back to an on-demand
+  // fetch otherwise. The completion panel shows ONLY when nothing is pending
+  // anywhere in the journey.
   React.useEffect(() => {
     if (!finished || !active || !inJourney) {
       setJourneyComplete(false);
@@ -664,15 +736,14 @@ export function QAReviewOverlay({
     }
     let cancelled = false;
     void (async () => {
-      const counts = await fetchPendingCounts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages);
+      const cached = prefetchRef.current;
+      const counts =
+        cached && isPrefetchFresh(cached.at, Date.now())
+          ? { ...cached.counts }
+          : await fetchPendingCounts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages);
       if (cancelled) return;
-      // Current page from LIVE state, with NAVIGATION semantics (0.3.2):
-      // unverdicted = untouched this run. Rejects and partial device
-      // approvals are handled-this-run - counting them as pending made the
-      // journey ping-pong back to freshly-rejected pages forever.
-      counts[target] = items.filter(
-        (i) => !results[i.id]?.verdict && !partials[i.id]?.length,
-      ).length;
+      // Current page from LIVE state, with NAVIGATION semantics (0.3.2).
+      counts[target] = liveCurrentPending();
       setJourneyCounts(counts);
       const action = resolveFinishAction(journey!.pages, counts, journeyIdx);
       if (action.kind === "navigate") navigateTo(action.page); // IMMEDIATE
@@ -756,8 +827,11 @@ export function QAReviewOverlay({
     ...(theme?.inputBg ? { "--qar-input-bg": theme.inputBg } : null),
   } as React.CSSProperties;
 
+  // LEDGER (all-time on this page) vs THIS ROUND (acted on in this run).
   const approved = Object.values(results).filter((r) => r.verdict === "approve").length;
   const rejected = Object.values(results).filter((r) => r.verdict === "reject").length;
+  const sessionApproved = Object.values(sessionVerdicts).filter((v) => v === "approve").length;
+  const sessionRejected = Object.values(sessionVerdicts).filter((v) => v === "reject").length;
 
   /* ------------------------------ finish panel ------------------------------ */
   if (finished) {
@@ -786,10 +860,15 @@ export function QAReviewOverlay({
         <div className="qar-finish-card">
           <PartyPopper className="qar-finish-icon" size={40} aria-hidden />
           <h2 className="qar-finish-title">{inJourney ? "Journey complete" : "QA review complete"}</h2>
-          <p className="qar-finish-stats">
-            <span className="qar-green">{approved} approved</span> ·{" "}
-            <span className="qar-red">{rejected} rejected</span> · {total} total
-            {inJourney && <span className="qar-muted"> (this page)</span>}
+          <p className="qar-finish-stats" data-qatip="Verdicts you recorded in THIS review run">
+            <span className="qar-green">{sessionApproved} approved</span> ·{" "}
+            <span className="qar-red">{sessionRejected} rejected</span> · this round
+          </p>
+          <p
+            className="qar-finish-alltime"
+            data-qatip="Ledger totals for this page across all runs (durable review database)"
+          >
+            all-time on this page: {approved} approved · {rejected} rejected · {total} items
           </p>
 
           <p
@@ -895,7 +974,8 @@ export function QAReviewOverlay({
 
   const existing = results[current.id]?.verdict;
   const approvedCount = items.filter((it) => results[it.id]?.verdict === "approve").length;
-  const decidedInRound = roundItems.filter((it) => results[it.id]?.verdict).length;
+  // Decided-this-round = verdicts recorded in THIS run (not hydrated history).
+  const decidedInRound = Object.keys(sessionVerdicts).length;
   const hasNext = index < roundTotal - 1 || inJourney;
   const hasPrev = index > 0 || !!prevJourneyPage;
   const codename = codenameFor(target, current.id);
@@ -913,9 +993,34 @@ export function QAReviewOverlay({
 
   return createPortal(
     <>
+      {/* MOBILE PREVIEW (0.3.5): phone-sized same-origin iframe on a dimmed
+          backdrop - lets Approve Mobile be exercised on desktop. The QA card
+          stays usable on top. */}
+      {mobilePreview && previewUrl && (
+        <div className="qar-theme qar-preview-backdrop" style={themeStyle}>
+          <div className="qar-preview-frame">
+            <iframe
+              src={previewUrl}
+              title="Mobile preview of the current page"
+              width={MOBILE_PREVIEW_WIDTH}
+              height={MOBILE_PREVIEW_HEIGHT}
+            />
+            <button
+              type="button"
+              onClick={() => setMobilePreview(false)}
+              aria-label="Close the mobile preview"
+              data-qatip="Close the mobile preview and return to the normal page"
+              className="qar-preview-close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Spotlight: a box-shadow-spread dim over everything except the target.
           Task items get a plain full-page dim (no spotlight hole). */}
-      {rect && !currentIsTask ? (
+      {mobilePreview ? null : rect && !currentIsTask ? (
         <div
           aria-hidden
           className="qar-theme qar-spotlight"
@@ -985,6 +1090,15 @@ export function QAReviewOverlay({
               className="qar-tool-btn"
             >
               <Undo2 size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobilePreview((v) => !v)}
+              aria-label="Toggle the mobile preview"
+              data-qatip="Mobile preview: view this page in a phone-sized frame (for Approve Mobile on desktop)"
+              className={`qar-tool-btn${mobilePreview ? " qar-picking" : ""}`}
+            >
+              <Smartphone size={14} />
             </button>
             <button
               type="button"
@@ -1233,7 +1347,9 @@ export function QAReviewOverlay({
             <span className="qar-footer-green" data-qatip="Items decided in this round">
               {decidedInRound}/{roundTotal} this round
             </span>{" "}
-            <span data-qatip="Fully approved items on this page">· {approvedCount} approved total</span>
+            <span data-qatip="Fully approved items on this page across all runs (ledger)">
+              · {approvedCount} approved all-time
+            </span>
           </span>
         </div>
       </div>

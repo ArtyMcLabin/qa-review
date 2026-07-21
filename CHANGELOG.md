@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.5 - 2026-07-21
+
+- JOURNEY PRELOAD: within the final 2 items of a round the overlay prefetches
+  the other pages' pending counts in the background and warms the likely next
+  page with a <link rel="prefetch"> hint. Round exhaustion then navigates
+  INSTANTLY on the cached result (30s freshness window; stale/missing falls
+  back to the on-demand fetch + loading card).
+- MOBILE PREVIEW: a panel button renders the current page in a phone-sized
+  (390x844) framed same-origin iframe on a dimmed backdrop - Approve Mobile
+  without devtools. The QA card stays usable on top; a close control (or the
+  toggle) returns to normal. The iframe URL keeps the QA params plus a
+  qaMobilePreview marker that keeps the embedded overlay dormant.
+- ROUND-SCOPED COUNTERS: the finish panel now leads with THIS ROUND's
+  approved/rejected (verdicts recorded in this run); ledger totals moved to a
+  smaller line labeled "all-time on this page". The footer decided-counter is
+  session-based and the approved total is labeled "approved all-time".
+
 ## 0.3.4 - 2026-07-21
 
 - TOOLTIP DE-NESTING: exactly one tooltip per hover point. Container elements
