@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 - 2026-07-21
+
+- CRITICAL journey fix: the walkthrough ping-ponged forever between a page
+  with fresh REJECTS and the next page (rejected items counted as pending for
+  navigation, so wraparound kept returning to them). Navigation-pending is now
+  UNVERDICTED only (no verdict and no device approvals) - approve, reject,
+  and partial device states all count as handled for the current run.
+  Rejected items still re-enter FUTURE rounds (round/ledger semantics
+  unchanged); the journey-complete panel shows when every page has zero
+  unverdicted items. New `countUnverdicted` export.
+
 ## 0.3.1 - 2026-07-21
 
 - JOURNEY LOADING INDICATOR: finishing a page in a journey now shows an

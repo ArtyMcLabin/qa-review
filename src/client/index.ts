@@ -18,6 +18,7 @@ export {
 export {
   journeyIndex,
   countPending,
+  countUnverdicted,
   nextPendingPage,
   buildJourneyNavUrl,
   fetchPendingCounts,

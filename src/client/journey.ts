@@ -27,18 +27,39 @@ export function journeyIndex(pages: readonly QAJourneyPage[], target: string): n
 }
 
 /**
- * Pending = items NOT approved in the ledger map (unreviewed OR rejected) -
- * mirrors the overlay's round-freeze rule. An empty/missing map counts every
- * item as pending (never silently skips a page).
+ * ROUND-pending = items NOT approved in the ledger map (unreviewed OR
+ * rejected) - the overlay's round-freeze rule: rejected items re-present in
+ * FUTURE rounds. An empty/missing map counts every item as pending.
  */
 export function countPending(itemIds: readonly string[], map: VerdictMap | null | undefined): number {
   return itemIds.filter((id) => map?.[id]?.verdict !== "approve").length;
 }
 
 /**
+ * NAVIGATION-pending (0.3.2 fix) = items the reviewer has not TOUCHED yet:
+ * no verdict AND no device approvals recorded. Approve, reject, AND partial
+ * device states all count as HANDLED for the current run's navigation -
+ * 🚨 counting fresh REJECTS as pending made the journey ping-pong forever
+ * between a rejected page and the next one (wraparound kept returning to the
+ * rejects). Rejected items still re-enter FUTURE rounds via countPending /
+ * the round freeze - they just never re-enter THIS run's walkthrough.
+ */
+export function countUnverdicted(
+  itemIds: readonly string[],
+  map: VerdictMap | null | undefined,
+): number {
+  return itemIds.filter((id) => {
+    const e = map?.[id];
+    return !e?.verdict && !e?.approvedDevices?.length;
+  }).length;
+}
+
+/**
  * Next journey page (excluding the current one) with pending items: searches
  * FORWARD from the current page and wraps around, so a mid-journey start still
- * covers earlier pages. Returns null when the whole journey is clean.
+ * covers earlier pages. Returns null when the whole journey is clean. Feed it
+ * NAVIGATION-pending counts (countUnverdicted) - never round counts, or pages
+ * with fresh rejects bounce the walkthrough back forever.
  */
 export function nextPendingPage(
   pages: readonly QAJourneyPage[],
@@ -99,8 +120,10 @@ export function buildJourneyNavUrl(path: string, currentSearch: string): string 
 
 /**
  * Fetch the ledger for every journey page (one state GET per target) and
- * return pending counts. A failed fetch counts that page's items as pending
- * (never lose a page silently).
+ * return NAVIGATION-pending counts (unverdicted items - see countUnverdicted;
+ * rejected/partial items are handled-this-run and must not re-attract
+ * navigation). A failed fetch counts that page's items as pending (never lose
+ * a page silently).
  */
 export async function fetchPendingCounts(
   stateUrl: string,
@@ -121,7 +144,7 @@ export async function fetchPendingCounts(
       } catch {
         map = null;
       }
-      out[p.target] = countPending(p.itemIds, map);
+      out[p.target] = countUnverdicted(p.itemIds, map);
     }),
   );
   return out;

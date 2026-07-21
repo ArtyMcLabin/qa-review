@@ -656,12 +656,12 @@ export function QAReviewOverlay({
     void (async () => {
       const counts = await fetchPendingCounts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages);
       if (cancelled) return;
+      // Current page from LIVE state, with NAVIGATION semantics (0.3.2):
+      // unverdicted = untouched this run. Rejects and partial device
+      // approvals are handled-this-run - counting them as pending made the
+      // journey ping-pong back to freshly-rejected pages forever.
       counts[target] = items.filter(
-        (i) =>
-          !isFullyApproved(
-            { verdict: results[i.id]?.verdict, approvedDevices: partials[i.id] },
-            requiredDevices(i),
-          ),
+        (i) => !results[i.id]?.verdict && !partials[i.id]?.length,
       ).length;
       setJourneyCounts(counts);
       const action = resolveFinishAction(journey!.pages, counts, journeyIdx);
