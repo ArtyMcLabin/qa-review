@@ -15,3 +15,9 @@ export {
   type SessionResultRow,
   type SessionSummary,
 } from "./storage.js";
+export {
+  codenameFor,
+  findByCodename,
+  formatQARef,
+  type CodenameEntry,
+} from "../shared/codename.js";

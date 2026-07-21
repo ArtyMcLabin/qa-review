@@ -122,6 +122,38 @@ export const QA_STYLES = `
 .qar-journey-left{color:${ACCENT};font-weight:700;}
 .qar-journey-done{color:#4ade80;}
 .qar-journey-nav{margin:6px 0 0;font-size:12px;color:#86efac;}
+
+/* ---- 0.3.0: note field fills the card ---- */
+.qar-card-body{display:flex;flex-direction:column;}
+.qar-note-input{flex:1 1 auto;min-height:110px;}
+
+/* ---- 0.3.0: NOT-ALTERED fingerprint badges ---- */
+.qar-fp-unchanged{margin:8px 0 0;border-radius:6px;border:1px solid rgba(239,68,68,.6);
+  background:rgba(127,29,29,.35);padding:6px 8px;font-size:12px;font-weight:700;color:#fecaca;}
+.qar-fp-unchanged small{display:block;margin-top:4px;font-weight:400;color:#fca5a5;}
+.qar-fp-changed{margin:8px 0 0;font-size:11px;color:#94a3b8;}
+
+/* ---- 0.3.0: sub-highlight mark (injected into the page) ---- */
+mark.qar-subhl{background:${mix(35)};color:inherit;border-radius:3px;padding:0 2px;box-shadow:0 0 0 1px ${mix(60)};}
+
+/* ---- 0.3.0: codename / copy-ref ---- */
+.qar-ref-row{margin-top:6px;display:flex;align-items:center;gap:6px;font-size:10px;color:#64748b;}
+.qar-codename{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:${ACCENT};}
+
+/* ---- 0.3.0: device-split approvals ---- */
+.qar-approve-alt{display:flex;flex:1;align-items:center;justify-content:center;gap:6px;border-radius:8px;
+  border:1px solid ${mix(50)};background:${mix(12)};padding:8px 12px;font-size:14px;font-weight:700;color:${ACCENT};}
+.qar-approve-alt:hover{background:${mix(20)};}
+.qar-dev-done{opacity:.55;}
+.qar-partial-note{margin:6px 0 0;font-size:11px;color:#86efac;}
+
+/* ---- 0.3.0: minimize bubble ---- */
+.qar-card-header{touch-action:none;}
+.qar-bubble{position:fixed;z-index:99999;display:flex;align-items:center;justify-content:center;
+  width:52px;height:52px;border-radius:9999px;border:1px solid ${mix(60)};background:${PANEL};color:${ACCENT};
+  box-shadow:0 0 24px -6px ${mix(60)};cursor:pointer;touch-action:none;user-select:none;}
+.qar-bubble-count{position:absolute;top:-4px;right:-4px;display:flex;align-items:center;justify-content:center;
+  min-width:18px;height:18px;border-radius:9999px;background:${ACCENT};color:${ON_ACCENT};font-size:10px;font-weight:700;padding:0 4px;}
 `;
 
 const STYLE_ID = "qa-review-styles";

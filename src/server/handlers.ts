@@ -18,6 +18,7 @@ import {
   type QAReviewStorage,
   type SessionResultRow,
 } from "./storage.js";
+import { codenameFor } from "../shared/codename.js";
 
 /** Result of a successful authorization. */
 export interface QAAuthUser {
@@ -85,6 +86,11 @@ export function createQAReviewHandlers(opts: QAReviewHandlerOptions): QAReviewHa
 
       try {
         const verdicts = await storage.getState(site, target);
+        // Attach the deterministic codename per item so agents/humans can
+        // reference items by name ("I'm QA-ing red-apple").
+        for (const [itemId, v] of Object.entries(verdicts)) {
+          v.codename = codenameFor(target, itemId);
+        }
         return json({ ok: true, verdicts });
       } catch (e) {
         console.error("[qa-review/state] read failed:", e);
@@ -102,6 +108,8 @@ export function createQAReviewHandlers(opts: QAReviewHandlerOptions): QAReviewHa
         verdict?: string | null;
         note?: string;
         variant?: number;
+        fp?: string;
+        approvedDevices?: unknown;
       };
       try {
         body = await req.json();
@@ -121,7 +129,13 @@ export function createQAReviewHandlers(opts: QAReviewHandlerOptions): QAReviewHa
           return json({ ok: true, deleted: itemId });
         }
 
-        const patch: { verdict?: string; note?: string | null; variant?: number | null } = {};
+        const patch: {
+          verdict?: string;
+          note?: string | null;
+          variant?: number | null;
+          fp?: string | null;
+          approvedDevices?: string[] | null;
+        } = {};
         if (body.verdict !== undefined) {
           if (body.verdict !== "approve" && body.verdict !== "reject") {
             return json({ ok: false, error: "Invalid verdict." }, 400);
@@ -131,6 +145,12 @@ export function createQAReviewHandlers(opts: QAReviewHandlerOptions): QAReviewHa
         if (body.note !== undefined) patch.note = String(body.note).slice(0, MAX_TEXT) || null;
         if (body.variant !== undefined)
           patch.variant = typeof body.variant === "number" ? body.variant : null;
+        if (body.fp !== undefined) patch.fp = String(body.fp).slice(0, 128) || null;
+        if (body.approvedDevices !== undefined) {
+          patch.approvedDevices = Array.isArray(body.approvedDevices)
+            ? body.approvedDevices.filter((d): d is string => d === "pc" || d === "mobile")
+            : null;
+        }
 
         await storage.upsertState(site, target, itemId, patch);
         return json({ ok: true });

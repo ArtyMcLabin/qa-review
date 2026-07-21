@@ -25,6 +25,9 @@ function fakeStorage() {
         verdict: patch.verdict !== undefined ? patch.verdict : prev.verdict,
         note: patch.note !== undefined ? (patch.note ?? undefined) : prev.note,
         variant: patch.variant !== undefined ? (patch.variant ?? undefined) : prev.variant,
+        fp: patch.fp !== undefined ? (patch.fp ?? undefined) : prev.fp,
+        approvedDevices:
+          patch.approvedDevices !== undefined ? (patch.approvedDevices ?? undefined) : prev.approvedDevices,
       };
       state.set(key(site, target), bucket);
     },
@@ -125,7 +128,8 @@ describe("state ledger", () => {
 
     res = await h.stateGET(new Request(`${BASE}/state?target=${encodeURIComponent("page:/")}`));
     const data = await res.json();
-    expect(data.verdicts.hero).toEqual({ verdict: "approve", variant: 2, note: "nice" });
+    // (GET also attaches a computed codename - covered in the 0.3.0 suite.)
+    expect(data.verdicts.hero).toMatchObject({ verdict: "approve", variant: 2, note: "nice" });
   });
 
   it("verdict:null deletes exactly that item (single-item invalidation)", async () => {
@@ -139,7 +143,7 @@ describe("state ledger", () => {
 
     const read = await (await h.stateGET(new Request(`${BASE}/state?target=t`))).json();
     expect(read.verdicts.a).toBeUndefined();
-    expect(read.verdicts.b).toEqual({ verdict: "reject" });
+    expect(read.verdicts.b).toMatchObject({ verdict: "reject" });
   });
 
   it("rejects invalid verdict values", async () => {
@@ -201,5 +205,42 @@ describe("session submit", () => {
     expect(data.ok).toBe(true);
     expect(data.sessions).toHaveLength(1);
     expect(data.sessions[0].target).toBe("t");
+  });
+});
+
+describe("0.3.0 state fields (fingerprint + device approvals + codenames)", () => {
+  it("fp and approvedDevices round-trip through POST/GET", async () => {
+    const { storage } = fakeStorage();
+    const h = createQAReviewHandlers({ site: "example", authorize: allow, storage });
+    await h.statePOST(
+      post(`${BASE}/state`, { target: "t", itemId: "hero", approvedDevices: ["pc"], fp: "cafe1234" }),
+    );
+    await h.statePOST(
+      post(`${BASE}/state`, { target: "t", itemId: "hero", verdict: "approve", approvedDevices: ["pc", "mobile"] }),
+    );
+    const data = await (await h.stateGET(new Request(`${BASE}/state?target=t`))).json();
+    expect(data.verdicts.hero.fp).toBe("cafe1234"); // merged, not clobbered
+    expect(data.verdicts.hero.approvedDevices).toEqual(["pc", "mobile"]);
+    expect(data.verdicts.hero.verdict).toBe("approve");
+  });
+
+  it("approvedDevices values outside pc/mobile are filtered", async () => {
+    const { storage, state } = fakeStorage();
+    const h = createQAReviewHandlers({ site: "example", authorize: allow, storage });
+    await h.statePOST(
+      post(`${BASE}/state`, { target: "t", itemId: "x", approvedDevices: ["pc", "tv", 42] }),
+    );
+    expect(state.get("example|t")?.x.approvedDevices).toEqual(["pc"]);
+  });
+
+  it("state GET attaches the deterministic codename per item", async () => {
+    const { storage } = fakeStorage();
+    const h = createQAReviewHandlers({ site: "example", authorize: allow, storage });
+    await h.statePOST(post(`${BASE}/state`, { target: "t", itemId: "hero", verdict: "approve" }));
+    const data = await (await h.stateGET(new Request(`${BASE}/state?target=t`))).json();
+    expect(data.verdicts.hero.codename).toMatch(/^[a-z]+-[a-z0-9]+$/);
+    // deterministic: same (target, itemId) -> same codename on every read
+    const again = await (await h.stateGET(new Request(`${BASE}/state?target=t`))).json();
+    expect(again.verdicts.hero.codename).toBe(data.verdicts.hero.codename);
   });
 });

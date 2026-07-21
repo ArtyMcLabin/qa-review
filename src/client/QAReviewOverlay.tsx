@@ -4,20 +4,31 @@
 // dims the page except the current review target, shows a card with the item's
 // title/subtitle + Approve/Reject/Prev/Next, and persists verdicts as you go to
 // a DURABLE server-side ledger (the state endpoint) with localStorage as a fast
-// local cache. Round-based: the set of actionable (not-yet-approved) items is
+// local cache. Round-based: the set of actionable (not-fully-approved) items is
 // FROZEN at hydration with a fixed denominator, so approved items never
 // re-appear mid-round and the counter counts up "1 of N" against a stable N.
 // 🚨 There is NO reset-all anywhere: the ledger is never bulk-wiped; a single
 // item is re-queued by invalidating just it (state POST with `verdict: null`).
 //
-// Extras:
+// Capabilities:
 // - TASK ITEMS: an item without a `selector` renders as a centered card (no
-//   spotlight) with an optional action link - for visit-this-page checks and
-//   decisions with no on-page anchor. Same verdict/undo/note flow.
-// - JOURNEY: an ordered multi-page review. When this page's round is done, the
-//   overlay shows per-page pending counts and AUTO-NAVIGATES to the next page
-//   with pending items, preserving the activation query params (gate param,
-//   auth key, ...) across the full page load.
+//   spotlight) with an optional action link. Same verdict/undo/note flow.
+// - JOURNEY: ordered multi-page review. The moment a page's round is done the
+//   overlay navigates IMMEDIATELY to the next page with pending items (no
+//   interstitial); a completion panel shows only when NOTHING is pending
+//   anywhere. Activation query params survive the hop.
+// - NOT-ALTERED POKA-YOKE: every verdict stores a content fingerprint. A
+//   re-shown REJECTED item whose content fingerprints identical gets a
+//   prominent system-computed "NOT ALTERED since your rejection" badge (the
+//   overlay judges by hashing - never an operating agent's claim).
+// - DEVICE-SPLIT APPROVALS: items can require per-device sign-off (PC/mobile);
+//   approved only when every required device approved. Plain historical
+//   approvals are grandfathered as fully approved.
+// - SUB-HIGHLIGHT: `highlightWords` wraps matching words inside the anchored
+//   element with a secondary mark, replacing "where to look" prose.
+// - CODENAMES: every item gets a stable two-word codename + "Copy ref".
+// - MINIMIZE BUBBLE: the panel collapses to a draggable floating bubble
+//   (mouse + touch); tapping it restores the panel.
 
 import * as React from "react";
 import { createPortal } from "react-dom";
@@ -28,31 +39,59 @@ import {
   ChevronRight,
   ClipboardCopy,
   PartyPopper,
-  Eye,
   Database,
   Undo2,
   Crosshair,
   Locate,
   ExternalLink,
+  Minimize2,
+  Monitor,
+  Smartphone,
+  ClipboardCheck,
 } from "lucide-react";
-import type { QAReviewItem, QAResult, QATheme, QAVerdict, QASubmission } from "./types.js";
+import type { QAReviewItem, QAResult, QATheme, QASubmission } from "./types.js";
 import { isTaskItem } from "./types.js";
 import { QAStore, type VerdictMap } from "./store.js";
 import {
   buildJourneyNavUrl,
   fetchPendingCounts,
   journeyIndex,
-  nextPendingPage,
+  resolveFinishAction,
   type QAJourneyConfig,
   type QAJourneyPage,
 } from "./journey.js";
+import { fingerprintStatus, itemFingerprint } from "./fingerprint.js";
+import {
+  DEVICE_LABEL,
+  DEVICE_TOOLTIP,
+  approvedDevicesOf,
+  detectDevice,
+  isFullyApproved,
+  nextApprovedDevices,
+  requiredDevices,
+  type QADevice,
+} from "./device.js";
+import { applySubHighlights } from "./highlight.js";
+import { codenameFor, formatQARef } from "../shared/codename.js";
 import { ensureQAStyles } from "./styles.js";
 
 const RING = 8; // px padding of the spotlight around the target
 const CARD_W = 340;
 const CARD_H = 544;
-const AUTO_NAV_DELAY_MS = 3000;
 const DEFAULT_STATE_URL = "/api/qa/state";
+/** Pointer movement below this (px) counts as a click, not a drag. */
+const CLICK_DRAG_THRESHOLD_PX = 6;
+
+/** Was the pointer gesture a click (vs a drag)? Exported for tests. */
+export function isClickGesture(dx: number, dy: number): boolean {
+  return Math.hypot(dx, dy) < CLICK_DRAG_THRESHOLD_PX;
+}
+
+const DEVICE_EMOJI_TIP: Record<string, string> = {
+  "💻": "review on PC",
+  "📱": "review on mobile",
+  "💻📱": "review on PC and mobile",
+};
 
 export interface QAReviewOverlayProps {
   items: QAReviewItem[];
@@ -87,6 +126,38 @@ export interface QAReviewOverlayProps {
 
 type Rect = { top: number; left: number; width: number; height: number };
 type SaveState = { status: "idle" | "saving" | "ok" | "error"; message?: string };
+type XY = { x: number; y: number };
+
+/** Pointer-based drag (mouse + touch). Calls onClickInstead for taps. */
+function usePointerDrag(getBase: () => XY, onMove: (p: XY) => void, onClickInstead?: () => void) {
+  return React.useCallback(
+    (e: React.PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("button, textarea, input, a")) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const base = getBase();
+      let moved = false;
+      const move = (ev: PointerEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!isClickGesture(dx, dy)) moved = true;
+        if (moved) onMove({ x: base.x + dx, y: base.y + dy });
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        if (!moved && onClickInstead) onClickInstead();
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    },
+    [getBase, onMove, onClickInstead],
+  );
+}
 
 export function QAReviewOverlay({
   items,
@@ -109,14 +180,19 @@ export function QAReviewOverlay({
   const [hydrated, setHydrated] = React.useState(false);
   const [index, setIndex] = React.useState(0);
   const [results, setResults] = React.useState<Record<string, QAResult>>({});
-  // The ROUND: ids of the items that are ACTIONABLE this session (not yet
-  // approved), frozen at hydration. The overlay steps through ONLY these, with
-  // a FIXED denominator, so approved/unchanged items never re-appear.
+  // Partial device approvals (item not yet fully approved).
+  const [partials, setPartials] = React.useState<Record<string, QADevice[]>>({});
+  // Stored content fingerprints per item (from the ledger / this session).
+  const [fps, setFps] = React.useState<Record<string, string>>({});
+  // Current item's LIVE fingerprint (system-computed, drives the badges).
+  const [currentFp, setCurrentFp] = React.useState<string | null>(null);
+  // The ROUND: ids of the items ACTIONABLE this session (not fully approved
+  // under device-aware semantics), frozen at hydration.
   const [roundIds, setRoundIds] = React.useState<string[]>([]);
   const [note, setNote] = React.useState("");
   const [rect, setRect] = React.useState<Rect | null>(null);
-  // Panel lives on the LEFT and is draggable by its header (null = default left).
-  const [pos, setPos] = React.useState<{ x: number; y: number } | null>(null);
+  // Panel lives on the LEFT and is draggable by its header (null = default).
+  const [pos, setPos] = React.useState<XY | null>(null);
   const cardRef = React.useRef<HTMLDivElement>(null);
   const noteRef = React.useRef<HTMLTextAreaElement>(null);
   // When set, the note effect uses this text instead of the stored note (so
@@ -126,23 +202,22 @@ export function QAReviewOverlay({
   const [picking, setPicking] = React.useState(false);
   const [finished, setFinished] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
+  const [refCopied, setRefCopied] = React.useState(false);
   const [save, setSave] = React.useState<SaveState>({ status: "idle" });
-  // 3-second "peek": hide the overlay chrome so the page reads as final.
-  const [peeking, setPeeking] = React.useState(false);
+  // Minimized-to-bubble state (replaces the old 3s peek).
+  const [minimized, setMinimized] = React.useState(false);
+  const [bubblePos, setBubblePos] = React.useState<XY | null>(null);
+  const bubbleRef = React.useRef<HTMLDivElement>(null);
   // Stack of item ids in the order they were decided, for Undo.
   const [undoStack, setUndoStack] = React.useState<string[]>([]);
-  // Journey: pending counts per target + the auto-navigation target page.
+  // Journey: pending counts (for the journey-complete panel only - page-level
+  // completion navigates IMMEDIATELY with no interstitial).
   const [journeyCounts, setJourneyCounts] = React.useState<Record<string, number> | null>(null);
-  const [navPage, setNavPage] = React.useState<QAJourneyPage | null>(null);
-  const [navCancelled, setNavCancelled] = React.useState(false);
+  const [journeyComplete, setJourneyComplete] = React.useState(false);
 
   const journeyIdx = journey ? journeyIndex(journey.pages, target) : -1;
   const inJourney = !!journey && journeyIdx >= 0;
-
-  const peek = React.useCallback(() => {
-    setPeeking(true);
-    window.setTimeout(() => setPeeking(false), 3000);
-  }, []);
+  const detectedDevice = React.useMemo(() => detectDevice(), []);
 
   // Optional opt-in gate (URL param), read on mount so SSR stays static.
   React.useEffect(() => {
@@ -151,26 +226,35 @@ export function QAReviewOverlay({
     if (params.has(gateParam)) setActive(true);
   }, [gateParam]);
 
-  // Hydrate verdicts and LAND on the first outstanding (unreviewed OR rejected)
-  // item. The DURABLE server ledger is the source of truth - it survives a
-  // browser cookie/localStorage wipe; localStorage is only a fast cache for
-  // instant paint before the server responds. 🚨 The store NEVER pre-approves
-  // (no seed): a fresh/empty store can never open as "complete".
+  // Hydrate verdicts and LAND on the first outstanding item. The DURABLE
+  // server ledger is the source of truth; localStorage is only a fast cache.
+  // 🚨 The store NEVER pre-approves (no seed). The round derives from
+  // DEVICE-AWARE semantics: plain historical approvals are GRANDFATHERED as
+  // fully approved; device-split items stay pending until every required
+  // device is approved.
   React.useEffect(() => {
     ensureQAStyles();
     let cancelled = false;
     const apply = (map: VerdictMap) => {
       if (cancelled) return;
       const restored: Record<string, QAResult> = {};
+      const parts: Record<string, QADevice[]> = {};
+      const storedFps: Record<string, string> = {};
       for (const [id, v] of Object.entries(map)) {
-        if (!v.verdict) continue; // variant-only entries carry no verdict
-        const it = items.find((i) => i.id === id);
-        restored[id] = { id, title: it?.title ?? id, verdict: v.verdict, note: v.note, variant: v.variant };
+        if (v.fp) storedFps[id] = v.fp;
+        if (v.verdict) {
+          const it = items.find((i) => i.id === id);
+          restored[id] = { id, title: it?.title ?? id, verdict: v.verdict, note: v.note, variant: v.variant };
+        } else if (v.approvedDevices?.length) {
+          parts[id] = approvedDevicesOf(v);
+        }
       }
       setResults(restored);
-      // Freeze the round = every item NOT already approved (unreviewed OR
-      // rejected), in page order. Empty round => nothing to do => finish panel.
-      const rIds = items.filter((i) => map[i.id]?.verdict !== "approve").map((i) => i.id);
+      setPartials(parts);
+      setFps(storedFps);
+      const rIds = items
+        .filter((i) => !isFullyApproved(map[i.id], requiredDevices(i)))
+        .map((i) => i.id);
       setRoundIds(rIds);
       setIndex(0);
       setFinished(rIds.length === 0);
@@ -193,8 +277,7 @@ export function QAReviewOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
 
-  // The frozen round, resolved to items in page order. Navigation + the counter
-  // work over THIS list, not the full item set.
+  // The frozen round, resolved to items in page order.
   const roundItems = React.useMemo(() => {
     const set = new Set(roundIds);
     return items.filter((i) => set.has(i.id));
@@ -207,11 +290,9 @@ export function QAReviewOverlay({
   // then keep the spotlight glued to it on scroll/resize. Task items (no
   // selector) render as a centered card over a full-page dim instead.
   React.useEffect(() => {
-    if (!active || finished || !current) return;
+    if (!active || finished || minimized || !current) return;
     const el = current.selector ? document.querySelector<HTMLElement>(current.selector) : null;
     if (!el) {
-      // Clear inside a frame (not synchronously in the effect body): avoids a
-      // cascading render per the react-hooks lint.
       const clear = requestAnimationFrame(() => setRect(null));
       return () => cancelAnimationFrame(clear);
     }
@@ -224,7 +305,23 @@ export function QAReviewOverlay({
     };
     raf = requestAnimationFrame(measure);
     return () => cancelAnimationFrame(raf);
+  }, [active, finished, minimized, current, index]);
+
+  // SYSTEM-COMPUTED live fingerprint of the current item (drives the
+  // NOT-ALTERED badge - never an agent's claim).
+  React.useEffect(() => {
+    if (!active || finished || !current) return;
+    setCurrentFp(itemFingerprint(current, document));
   }, [active, finished, current, index]);
+
+  // SUB-HIGHLIGHT: wrap the configured words/phrases inside the anchored
+  // element; fully restored when the step changes.
+  React.useEffect(() => {
+    if (!active || finished || minimized || !current?.selector || !current.highlightWords?.length) return;
+    const el = document.querySelector<HTMLElement>(current.selector);
+    if (!el) return;
+    return applySubHighlights(el, current.highlightWords);
+  }, [active, finished, minimized, current]);
 
   // Restore any existing note when revisiting a step. keepNoteRef (set by Undo)
   // wins once so Undo keeps what was typed instead of wiping the textarea.
@@ -237,23 +334,24 @@ export function QAReviewOverlay({
     if (current) setNote(results[current.id]?.note ?? "");
   }, [index, current, results]);
 
-  // Drag the panel by its header.
-  const onDragStart = React.useCallback((e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest("button, textarea, input, a")) return;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const r = cardRef.current?.getBoundingClientRect();
-    const baseX = r?.left ?? 16;
-    const baseY = r?.top ?? 24;
-    const move = (ev: MouseEvent) => setPos({ x: baseX + (ev.clientX - startX), y: baseY + (ev.clientY - startY) });
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  }, []);
+  // Drag the panel by its header (pointer events: mouse + touch).
+  const onCardDragStart = usePointerDrag(
+    React.useCallback(() => {
+      const r = cardRef.current?.getBoundingClientRect();
+      return { x: r?.left ?? 16, y: r?.top ?? 24 };
+    }, []),
+    setPos,
+  );
+
+  // Drag the bubble anywhere; a plain tap/click restores the panel.
+  const onBubbleDragStart = usePointerDrag(
+    React.useCallback(() => {
+      const r = bubbleRef.current?.getBoundingClientRect();
+      return { x: r?.left ?? 16, y: r?.top ?? 24 };
+    }, []),
+    setBubblePos,
+    React.useCallback(() => setMinimized(false), []),
+  );
 
   // Element-picker: next click on the page (outside the panel) inserts a
   // reference to that element into the note textarea at the cursor.
@@ -290,35 +388,84 @@ export function QAReviewOverlay({
 
   const total = items.length;
 
-  const record = React.useCallback(
-    (verdict: QAVerdict) => {
+  const advance = React.useCallback(() => {
+    // Advance within the FROZEN round (denominator stays fixed). The decided
+    // item stays in the round so Prev can walk back; finish past the last.
+    setIndex((i) => {
+      if (i + 1 >= roundTotal) {
+        setFinished(true);
+        return i;
+      }
+      return i + 1;
+    });
+  }, [roundTotal]);
+
+  const reject = React.useCallback(() => {
+    if (!current) return;
+    const trimmed = note.trim() || undefined;
+    const variant = current.variations?.current;
+    const fp = currentFp ?? itemFingerprint(current, document) ?? undefined;
+    setResults((prev) => ({
+      ...prev,
+      [current.id]: { id: current.id, title: current.title, verdict: "reject", note: trimmed, variant },
+    }));
+    if (fp) setFps((prev) => ({ ...prev, [current.id]: fp }));
+    store.cancelPendingNote(current.id); // the verdict write carries the note
+    store.persist(current.id, { verdict: "reject", note: trimmed, variant, fp }); // REAL-TIME
+    setUndoStack((s) => [...s, current.id]);
+    advance();
+  }, [current, note, currentFp, store, advance]);
+
+  /**
+   * Device-scoped approval. The item is APPROVED only when every required
+   * device has been approved; until then it stays on screen with a partial
+   * badge (navigation advances only on full approval or reject).
+   */
+  const approveDevice = React.useCallback(
+    (device: QADevice) => {
       if (!current) return;
+      const required = requiredDevices(current);
       const trimmed = note.trim() || undefined;
       const variant = current.variations?.current;
-      setResults((prev) => ({
-        ...prev,
-        [current.id]: { id: current.id, title: current.title, verdict, note: trimmed, variant },
-      }));
-      store.cancelPendingNote(current.id); // the verdict write carries the note
-      store.persist(current.id, { verdict, note: trimmed, variant }); // REAL-TIME durable mirror
+      const fp = currentFp ?? itemFingerprint(current, document) ?? undefined;
+      const newDevs = nextApprovedDevices({ approvedDevices: partials[current.id] }, device);
+      const complete = required.every((d) => newDevs.includes(d));
+      if (fp) setFps((prev) => ({ ...prev, [current.id]: fp }));
+      store.cancelPendingNote(current.id);
       setUndoStack((s) => [...s, current.id]);
-      // Advance within the FROZEN round (denominator stays fixed). The decided
-      // item stays in the round so Prev can walk back to it; finish when past
-      // the last round item.
-      if (index + 1 >= roundTotal) setFinished(true);
-      else setIndex(index + 1);
+      if (complete) {
+        setResults((prev) => ({
+          ...prev,
+          [current.id]: { id: current.id, title: current.title, verdict: "approve", note: trimmed, variant },
+        }));
+        setPartials((prev) => {
+          const next = { ...prev };
+          delete next[current.id];
+          return next;
+        });
+        store.persist(current.id, { verdict: "approve", note: trimmed, variant, fp, approvedDevices: newDevs });
+        advance();
+      } else {
+        setPartials((prev) => ({ ...prev, [current.id]: newDevs }));
+        store.persist(current.id, { approvedDevices: newDevs, note: trimmed, variant, fp });
+      }
     },
-    [current, note, index, roundTotal, store],
+    [current, note, currentFp, partials, store, advance],
   );
 
-  // Undo the most recent verdict: drop it locally + on the server (single-item
-  // invalidation) and jump back to that item so it can be re-decided.
+  // Undo the most recent verdict/approval: drop the WHOLE item entry locally +
+  // on the server (single-item invalidation) and jump back to it.
   const undo = React.useCallback(() => {
     setUndoStack((stack) => {
       if (!stack.length) return stack;
       const id = stack[stack.length - 1];
       setResults((prev) => {
         keepNoteRef.current = prev[id]?.note ?? ""; // Undo keeps the typed note
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setPartials((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -344,10 +491,6 @@ export function QAReviewOverlay({
 
   const prevJourneyPage = inJourney && journeyIdx > 0 ? journey!.pages[journeyIdx - 1] : null;
 
-  // Prev/Next step within the frozen round (approved/unchanged items are not in
-  // the round, so they never re-appear). With a journey: Prev at the first item
-  // goes back to the previous journey page; Next past the last item opens the
-  // finish/journey panel.
   const prev = React.useCallback(() => {
     if (index > 0) setIndex(index - 1);
     else if (prevJourneyPage) navigateTo(prevJourneyPage);
@@ -358,49 +501,66 @@ export function QAReviewOverlay({
   }, [index, roundTotal, inJourney]);
   const exit = React.useCallback(() => setActive(false), []);
 
-  // Keyboard: A approve, R reject, ←/→ prev/next, U/Ctrl+Z undo, Esc exit.
+  // The device whose approval is most actionable NOW (visual hint + "A" key):
+  // the detected device if required and unapproved, else the first unapproved
+  // required device. ALL buttons stay clickable regardless.
+  const currentRequired = current ? requiredDevices(current) : [];
+  const currentApproved = current ? (partials[current.id] ?? []) : [];
+  const hintDevice: QADevice | null = current
+    ? currentRequired.includes(detectedDevice) && !currentApproved.includes(detectedDevice)
+      ? detectedDevice
+      : (currentRequired.find((d) => !currentApproved.includes(d)) ?? null)
+    : null;
+
+  // Keyboard: A approve (hint device), R reject, ←/→, U/Ctrl+Z undo, M
+  // minimize, Esc exit.
   React.useEffect(() => {
-    if (!active || finished) return;
+    if (!active || finished || minimized) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement) return;
-      if (e.key === "a" || e.key === "A") record("approve");
-      else if (e.key === "r" || e.key === "R") record("reject");
+      if (e.key === "a" || e.key === "A") {
+        if (hintDevice) approveDevice(hintDevice);
+      } else if (e.key === "r" || e.key === "R") reject();
       else if (e.key === "ArrowRight") next();
       else if (e.key === "ArrowLeft") prev();
       else if (e.key === "u" || e.key === "U" || ((e.key === "z" || e.key === "Z") && (e.ctrlKey || e.metaKey))) undo();
+      else if (e.key === "m" || e.key === "M") setMinimized(true);
       else if (e.key === "Escape") exit();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, finished, record, next, prev, exit, undo]);
+  }, [active, finished, minimized, reject, approveDevice, hintDevice, next, prev, exit, undo]);
 
-  // Journey: when this page's round is done, fetch pending counts for every
-  // journey page (one state GET per target; the CURRENT page uses live local
-  // results) and pick the next page that still needs review.
+  // Journey: the moment this page's round is done, resolve the next step and
+  // navigate IMMEDIATELY (no interstitial, no success popup). The completion
+  // panel shows ONLY when nothing is pending anywhere in the journey.
   React.useEffect(() => {
-    if (!finished || !active || !inJourney) return;
+    if (!finished || !active || !inJourney) {
+      setJourneyComplete(false);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       const counts = await fetchPendingCounts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages);
       if (cancelled) return;
-      counts[target] = items.filter((i) => results[i.id]?.verdict !== "approve").length;
+      counts[target] = items.filter(
+        (i) =>
+          !isFullyApproved(
+            { verdict: results[i.id]?.verdict, approvedDevices: partials[i.id] },
+            requiredDevices(i),
+          ),
+      ).length;
       setJourneyCounts(counts);
-      setNavPage(nextPendingPage(journey!.pages, counts, journeyIdx));
+      const action = resolveFinishAction(journey!.pages, counts, journeyIdx);
+      if (action.kind === "navigate") navigateTo(action.page); // IMMEDIATE
+      else setJourneyComplete(true);
     })();
     return () => {
       cancelled = true;
     };
-    // Refresh only when the panel opens; results are frozen while it shows.
+    // Resolve once per finish; results are frozen while finished.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished, active, inJourney]);
-
-  // Journey: auto-navigate to the next pending page after a short, cancellable
-  // countdown ("Stay on this page" keeps the finish panel).
-  React.useEffect(() => {
-    if (!finished || !active || !navPage || navCancelled) return;
-    const t = window.setTimeout(() => navigateTo(navPage), AUTO_NAV_DELAY_MS);
-    return () => window.clearTimeout(t);
-  }, [finished, active, navPage, navCancelled, navigateTo]);
 
   const buildPayload = React.useCallback((): QASubmission => {
     const merged = items.map(
@@ -431,8 +591,21 @@ export function QAReviewOverlay({
     );
   }, [buildPayload]);
 
+  const copyRef = React.useCallback(() => {
+    if (!current) return;
+    const line = formatQARef(target, current.id, current.title);
+    navigator.clipboard.writeText(line).then(
+      () => {
+        setRefCopied(true);
+        window.setTimeout(() => setRefCopied(false), 1500);
+      },
+      () => {
+        window.prompt("Copy QA reference:", line);
+      },
+    );
+  }, [current, target]);
+
   // Persist the completed run as a session snapshot via the submit endpoint.
-  // Clipboard-JSON stays available as the fallback.
   const saveToDb = React.useCallback(async () => {
     if (!submitUrl) return;
     setSave({ status: "saving" });
@@ -465,74 +638,55 @@ export function QAReviewOverlay({
 
   /* ------------------------------ finish panel ------------------------------ */
   if (finished) {
-    const journeyDone = inJourney && journeyCounts && !navPage;
+    // In a journey the overlay navigates away IMMEDIATELY when other pages are
+    // pending - render nothing while that decision is in flight.
+    if (inJourney && !journeyComplete) return null;
     return createPortal(
       <div className="qar-theme qar-finish-backdrop" style={themeStyle}>
         <div className="qar-finish-card">
           <PartyPopper className="qar-finish-icon" size={40} aria-hidden />
-          <h2 className="qar-finish-title">
-            {journeyDone ? "Journey complete" : inJourney ? "Page complete" : "QA review complete"}
-          </h2>
+          <h2 className="qar-finish-title">{inJourney ? "Journey complete" : "QA review complete"}</h2>
           <p className="qar-finish-stats">
             <span className="qar-green">{approved} approved</span> ·{" "}
             <span className="qar-red">{rejected} rejected</span> · {total} total
             {inJourney && <span className="qar-muted"> (this page)</span>}
           </p>
 
-          <p className="qar-finish-autosaved">
+          <p
+            className="qar-finish-autosaved"
+            title="Every verdict was written to the server ledger the moment you decided it"
+          >
             <Database size={14} aria-hidden /> Auto-saved to the review database as you go.
           </p>
 
-          {inJourney && (
+          {inJourney && journeyCounts && (
             <div className="qar-journey">
-              {!journeyCounts && <p className="qar-journey-nav">Checking the other pages…</p>}
-              {journeyCounts &&
-                journey!.pages.map((p, i) => {
-                  const left = journeyCounts[p.target] ?? 0;
-                  return (
-                    <div key={p.target} className={`qar-journey-row${i === journeyIdx ? " qar-current" : ""}`}>
-                      <span>
-                        {p.label ?? p.path}
-                        {i === journeyIdx ? " (here)" : ""}
-                      </span>
-                      <span className={left === 0 ? "qar-journey-done" : "qar-journey-left"}>
-                        {left === 0 ? "✓ done" : `${left} left`}
-                      </span>
-                    </div>
-                  );
-                })}
-              {navPage && !navCancelled && (
-                <p className="qar-journey-nav">
-                  Continuing to {navPage.label ?? navPage.path} (page{" "}
-                  {journeyIndex(journey!.pages, navPage.target) + 1} of {journey!.pages.length})…
-                </p>
-              )}
+              {journey!.pages.map((p, i) => {
+                const left = journeyCounts[p.target] ?? 0;
+                return (
+                  <div key={p.target} className={`qar-journey-row${i === journeyIdx ? " qar-current" : ""}`}>
+                    <span>
+                      {p.label ?? p.path}
+                      {i === journeyIdx ? " (here)" : ""}
+                    </span>
+                    <span className={left === 0 ? "qar-journey-done" : "qar-journey-left"}>
+                      {left === 0 ? "✓ done" : `${left} left`}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
 
           <div className="qar-finish-actions">
-            {navPage && !navCancelled && (
-              <>
-                <button type="button" onClick={() => navigateTo(navPage)} className="qar-btn-primary">
-                  <ChevronRight size={16} aria-hidden /> Go now
-                </button>
-                <button type="button" onClick={() => setNavCancelled(true)} className="qar-btn-outline">
-                  Stay on this page
-                </button>
-              </>
-            )}
-            {navPage && navCancelled && (
-              <button type="button" onClick={() => navigateTo(navPage)} className="qar-btn-primary">
-                <ChevronRight size={16} aria-hidden /> Continue to {navPage.label ?? navPage.path}
-              </button>
-            )}
             {submitUrl && (
               <>
                 <button
                   type="button"
                   onClick={saveToDb}
                   disabled={save.status === "saving" || save.status === "ok"}
-                  className={navPage && !navCancelled ? "qar-btn-outline-accent" : "qar-btn-primary"}
+                  className="qar-btn-primary"
+                  title="Store a snapshot of this whole run (verdicts are already saved individually)"
                 >
                   <Database size={16} aria-hidden />
                   {save.status === "saving"
@@ -544,7 +698,12 @@ export function QAReviewOverlay({
                 {save.status === "error" && <p className="qar-warn">{save.message}</p>}
               </>
             )}
-            <button type="button" onClick={copyResults} className="qar-btn-outline-accent">
+            <button
+              type="button"
+              onClick={copyResults}
+              className="qar-btn-outline-accent"
+              title="Copy all verdicts of this page as JSON"
+            >
               <ClipboardCopy size={16} aria-hidden />
               {copied ? "Copied!" : "Copy JSON"}
             </button>
@@ -572,23 +731,41 @@ export function QAReviewOverlay({
 
   if (!current) return null;
 
-  if (peeking) return null; // 3s clean-page peek; chrome returns automatically
-
-  // Panel is pinned to the LEFT by default (so it never obscures the page) and
-  // can be dragged anywhere by its header. TASK items center it instead (there
-  // is no spotlighted element to avoid).
-  const cardStyle: React.CSSProperties = pos
-    ? { top: pos.y, left: pos.x }
-    : currentIsTask
-      ? { top: "50%", left: "50%", transform: "translate(-50%, -50%)" }
-      : { top: 24, left: 16 };
+  /* ---------------------------- minimized bubble ---------------------------- */
+  if (minimized) {
+    const bubbleStyle: React.CSSProperties = bubblePos
+      ? { top: bubblePos.y, left: bubblePos.x }
+      : { bottom: 24, right: 24 };
+    return createPortal(
+      <div
+        ref={bubbleRef}
+        className="qar-theme qar-bubble"
+        style={{ ...themeStyle, ...bubbleStyle }}
+        onPointerDown={onBubbleDragStart}
+        role="button"
+        aria-label="Restore the QA review panel"
+        title="QA review (tap to restore, drag to move)"
+      >
+        <ClipboardCheck size={24} aria-hidden />
+        <span className="qar-bubble-count" title="Items left to review on this page">
+          {Math.max(roundTotal - index, 0)}
+        </span>
+      </div>,
+      document.body,
+    );
+  }
 
   const existing = results[current.id]?.verdict;
   const approvedCount = items.filter((it) => results[it.id]?.verdict === "approve").length;
-  // Decided-this-round = round items that now carry a verdict (counts up 0..roundTotal).
   const decidedInRound = roundItems.filter((it) => results[it.id]?.verdict).length;
   const hasNext = index < roundTotal - 1 || inJourney;
   const hasPrev = index > 0 || !!prevJourneyPage;
+  const codename = codenameFor(target, current.id);
+  // NOT-ALTERED poka-yoke: system-computed comparison of the fingerprint saved
+  // with the last REJECTION vs the page content right now.
+  const fpStatus = existing === "reject" ? fingerprintStatus(fps[current.id], currentFp) : null;
+  const partialApproved = currentApproved.filter((d) => currentRequired.includes(d));
+  const multiDevice = currentRequired.length > 1;
 
   return createPortal(
     <>
@@ -614,25 +791,36 @@ export function QAReviewOverlay({
       <div
         ref={cardRef}
         className="qar-theme qar-card"
-        style={{ ...themeStyle, ...cardStyle, width: CARD_W, height: CARD_H }}
+        style={{
+          ...themeStyle,
+          ...(pos
+            ? { top: pos.y, left: pos.x }
+            : currentIsTask
+              ? { top: "50%", left: "50%", transform: "translate(-50%, -50%)" }
+              : { top: 24, left: 16 }),
+          width: CARD_W,
+          height: CARD_H,
+        }}
       >
         <div
           className="qar-card-header"
-          onMouseDown={onDragStart}
+          onPointerDown={onCardDragStart}
           style={{ cursor: "move" }}
           title="Drag to move the panel"
         >
-          <span className="qar-counter">
+          <span className="qar-counter" title="Position in this page's review round">
             {index + 1} of {roundTotal} to review
             {inJourney && (
-              <span className="qar-muted">
+              <span className="qar-muted" title="Journey progress across the reviewed pages">
                 {" "}
                 · page {journeyIdx + 1}/{journey!.pages.length}
               </span>
             )}
           </span>
           <span className="qar-header-tools">
-            {current.device && <span>{current.device}</span>}
+            {current.device && (
+              <span title={DEVICE_EMOJI_TIP[current.device] ?? "target viewport(s)"}>{current.device}</span>
+            )}
             {!currentIsTask && (
               <button
                 type="button"
@@ -656,21 +844,42 @@ export function QAReviewOverlay({
             </button>
             <button
               type="button"
-              onClick={peek}
-              aria-label="Peek at the final page for 3 seconds"
-              title="Peek: hide the panel for 3s to see the page clean"
+              onClick={() => setMinimized(true)}
+              aria-label="Minimize to a floating bubble"
+              title="Minimize: collapse into a floating bubble (M). Tap the bubble to restore."
               className="qar-tool-btn"
             >
-              <Eye size={14} />
+              <Minimize2 size={14} />
             </button>
-            <button type="button" onClick={exit} aria-label="Exit QA mode" className="qar-close-btn">
+            <button
+              type="button"
+              onClick={exit}
+              aria-label="Exit QA mode"
+              title="Exit QA mode (Esc)"
+              className="qar-close-btn"
+            >
               <X size={16} />
             </button>
           </span>
         </div>
 
-        {/* Scrollable middle so the card keeps a STATIC height and the action
-            buttons below stay pinned in the same place for every item. */}
+        <div
+          className="qar-ref-row"
+          title="Stable codename for this item - say or paste it to reference the item in chat"
+        >
+          <span className="qar-codename">{codename}</span>
+          <button
+            type="button"
+            onClick={copyRef}
+            className="qar-pick-btn"
+            title="Copy a reference line (codename + target + item id) for chat/issues"
+          >
+            <ClipboardCopy size={12} /> {refCopied ? "Copied!" : "Copy ref"}
+          </button>
+        </div>
+
+        {/* Scrollable middle so the card keeps a STATIC height; the note field
+            stretches to fill the space above the action buttons. */}
         <div className="qar-card-body">
           {!rect && !currentIsTask && (
             <p className="qar-warn">
@@ -697,14 +906,47 @@ export function QAReviewOverlay({
               href={current.action.href}
               target="_blank"
               rel="noopener noreferrer"
+              title={`Open ${current.action.href} in a new tab`}
             >
               <ExternalLink size={14} aria-hidden /> {current.action.label ?? "Open"}
             </a>
           )}
 
-          {existing && (
+          {/* NOT-ALTERED poka-yoke (system-computed, never an agent's claim). */}
+          {fpStatus === "unchanged" && (
+            <p
+              className="qar-fp-unchanged"
+              title="The content hash equals the hash recorded when you rejected this item - it was not altered"
+            >
+              ⚠ NOT ALTERED since your rejection
+              {results[current.id]?.note && <small>Your rejection note: {results[current.id]!.note}</small>}
+            </p>
+          )}
+          {fpStatus === "changed" && (
+            <p
+              className="qar-fp-changed"
+              title="The content hash differs from the one recorded at your last verdict"
+            >
+              Changed since your last review.
+            </p>
+          )}
+
+          {existing && fpStatus !== "unchanged" && (
             <p className={`qar-recorded ${existing === "approve" ? "qar-recorded-approve" : "qar-recorded-reject"}`}>
               Recorded: {existing}
+            </p>
+          )}
+
+          {multiDevice && partialApproved.length > 0 && (
+            <p
+              className="qar-partial-note"
+              title="Approved on some required devices; the item stays pending until all are approved"
+            >
+              {partialApproved.map((d) => DEVICE_LABEL[d]).join(" + ")} approved ✓ - awaiting{" "}
+              {currentRequired
+                .filter((d) => !partialApproved.includes(d))
+                .map((d) => DEVICE_LABEL[d])
+                .join(" + ")}
             </p>
           )}
 
@@ -721,6 +963,7 @@ export function QAReviewOverlay({
                       type="button"
                       onClick={() => current.variations!.onSelect(v)}
                       className={`qar-var-btn${on ? " qar-on" : ""}`}
+                      title={`Preview variant ${v} live on the page`}
                     >
                       {v}
                     </button>
@@ -752,7 +995,6 @@ export function QAReviewOverlay({
               if (current) store.persistNoteDebounced(current.id, e.target.value);
             }}
             placeholder="Optional note (esp. on reject). Use 'Pick element' to reference a spot on the page…"
-            rows={2}
             className="qar-note-input"
           />
         </div>
@@ -763,23 +1005,55 @@ export function QAReviewOverlay({
             onClick={prev}
             disabled={!hasPrev}
             aria-label="Previous item"
-            title={index === 0 && prevJourneyPage ? `Back to ${prevJourneyPage.label ?? prevJourneyPage.path}` : "Previous item"}
+            title={
+              index === 0 && prevJourneyPage
+                ? `Back to ${prevJourneyPage.label ?? prevJourneyPage.path}`
+                : "Previous item (←)"
+            }
             className="qar-nav-btn"
           >
             <ChevronLeft size={16} />
           </button>
-          <button type="button" onClick={() => record("reject")} className="qar-reject-btn">
+          <button type="button" onClick={reject} className="qar-reject-btn" title="Reject this item (R)">
             <X size={16} /> Reject
           </button>
-          <button type="button" onClick={() => record("approve")} className="qar-approve-btn">
-            <Check size={16} /> Approve
-          </button>
+          {currentRequired.map((d) => {
+            const done = partialApproved.includes(d);
+            const isHint = hintDevice === d;
+            const cls = multiDevice
+              ? `${isHint ? "qar-approve-btn" : "qar-approve-alt"}${done ? " qar-dev-done" : ""}`
+              : "qar-approve-btn";
+            return (
+              <button
+                key={d}
+                type="button"
+                onClick={() => approveDevice(d)}
+                className={cls}
+                title={`${DEVICE_TOOLTIP[d]}${isHint ? " (A)" : ""}${done ? " - already approved" : ""}`}
+              >
+                {multiDevice ? (
+                  d === "pc" ? (
+                    <Monitor size={16} aria-hidden />
+                  ) : (
+                    <Smartphone size={16} aria-hidden />
+                  )
+                ) : (
+                  <Check size={16} aria-hidden />
+                )}
+                {multiDevice ? `${done ? "✓ " : ""}${DEVICE_LABEL[d]}` : "Approve"}
+              </button>
+            );
+          })}
           <button
             type="button"
             onClick={next}
             disabled={!hasNext}
             aria-label="Next item"
-            title={index >= roundTotal - 1 && inJourney ? "Finish this page (journey summary)" : "Next item"}
+            title={
+              index >= roundTotal - 1 && inJourney
+                ? "Finish this page and continue the journey (→)"
+                : "Next item (→)"
+            }
             className="qar-nav-btn"
           >
             <ChevronRight size={16} />
@@ -787,12 +1061,12 @@ export function QAReviewOverlay({
         </div>
 
         <div className="qar-footer">
-          <span>keys: A approve · R reject · ←/→ · Esc</span>
+          <span title="Keyboard shortcuts">keys: A approve · R reject · ←/→ · U undo · M minimize · Esc</span>
           <span>
-            <span className="qar-footer-green">
+            <span className="qar-footer-green" title="Items decided in this round">
               {decidedInRound}/{roundTotal} this round
             </span>{" "}
-            · {approvedCount} approved total
+            <span title="Fully approved items on this page">· {approvedCount} approved total</span>
           </span>
         </div>
       </div>

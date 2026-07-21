@@ -52,6 +52,24 @@ export function nextPendingPage(
   return null;
 }
 
+export type FinishAction =
+  | { kind: "navigate"; page: QAJourneyPage }
+  | { kind: "journey-complete" };
+
+/**
+ * What happens the moment a page's round is exhausted: navigate IMMEDIATELY
+ * to the next page with pending items (no interstitial, no success popup), or
+ * show the journey-complete panel when nothing is pending anywhere.
+ */
+export function resolveFinishAction(
+  pages: readonly QAJourneyPage[],
+  pendingByTarget: Readonly<Record<string, number>>,
+  currentIndex: number,
+): FinishAction {
+  const page = nextPendingPage(pages, pendingByTarget, currentIndex);
+  return page ? { kind: "navigate", page } : { kind: "journey-complete" };
+}
+
 /**
  * Build the navigation URL for a journey hop, preserving the current page's
  * query params (QA gate param, auth key, ...) so activation survives the full

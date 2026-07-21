@@ -24,8 +24,20 @@ export interface QAReviewItem {
     label?: string;
     href: string;
   };
-  /** Which viewport(s) this item is about. */
+  /** Which viewport(s) this item is about (legacy display emoji). */
   device?: QAReviewDevice;
+  /**
+   * Devices whose sign-off is REQUIRED for this item to count as approved
+   * (device-split approvals). Default: ["pc"]. The item stays pending until
+   * every listed device is approved; rejection is whole-item.
+   */
+  devices?: Array<"pc" | "mobile">;
+  /**
+   * Words/phrases INSIDE the anchored element to sub-highlight (secondary
+   * mark on top of the spotlight). Replaces "where to look" prose - keep the
+   * question terse and let the highlight point.
+   */
+  highlightWords?: string[];
   /** Optional grouping label. */
   section?: string;
   /**

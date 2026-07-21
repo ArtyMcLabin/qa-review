@@ -19,6 +19,12 @@ export interface PersistedVerdict {
   verdict?: QAVerdict;
   variant?: number;
   note?: string;
+  /** Content fingerprint at verdict time (NOT-ALTERED poka-yoke). */
+  fp?: string;
+  /** Per-device approvals ("pc"/"mobile") for device-split items. */
+  approvedDevices?: string[];
+  /** Server-computed codename (present in state GET responses; read-only). */
+  codename?: string;
 }
 
 /** item id -> persisted verdict/variant/note. */

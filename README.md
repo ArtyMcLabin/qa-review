@@ -31,6 +31,25 @@ switches never lose progress.
 - **Self-provisioning Postgres storage** - the adapter creates its own
   `qa_review_*` tables on first use (versioned, advisory-locked). A `site`
   scope column lets one database serve many installs.
+- **Cross-page journey** - an ordered multi-page review: finishing a page
+  navigates immediately to the next page with pending items (activation query
+  params survive the hop); a completion panel shows only when the whole
+  journey is clean.
+- **Task items** - selectorless items render as a centered card with an
+  optional action-link button, for visit-this-page checks and decisions.
+- **NOT-ALTERED poka-yoke** - every verdict stores a content fingerprint; a
+  re-shown rejected item whose content still hashes identical gets a
+  system-computed "NOT ALTERED since your rejection" badge.
+- **Device-split approvals** - items can require per-device sign-off
+  (PC/mobile); approved only when every required device approved. Plain
+  historical approvals are grandfathered as fully approved.
+- **Sub-highlights** - `highlightWords` marks specific words inside the
+  spotlighted element, replacing "where to look" prose.
+- **Codenames** - a deterministic two-word codename per item ("red-apple")
+  with a Copy-ref button and an exported resolver, so humans and agents can
+  reference items by name. Included in state GET responses.
+- **Minimize bubble** - the panel collapses to a draggable floating bubble
+  (mouse + touch); tap to restore.
 - **No CSS toolchain required** - the overlay injects its own stylesheet;
   brand colors come from a small theme prop.
 

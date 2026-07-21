@@ -11,6 +11,12 @@ export interface StoredVerdict {
   verdict?: string;
   note?: string;
   variant?: number;
+  /** Content fingerprint at verdict time (NOT-ALTERED poka-yoke). */
+  fp?: string;
+  /** Per-device approvals ("pc"/"mobile") for device-split items. */
+  approvedDevices?: string[];
+  /** Deterministic two-word codename (computed, not stored). */
+  codename?: string;
 }
 
 /** item id -> stored verdict. */
@@ -20,6 +26,8 @@ export interface VerdictPatch {
   verdict?: string;
   note?: string | null;
   variant?: number | null;
+  fp?: string | null;
+  approvedDevices?: string[] | null;
 }
 
 export interface SessionResultRow {
@@ -98,6 +106,15 @@ const MIGRATIONS: ReadonlyArray<{ id: number; ddl: string }> = [
         ON qa_review_sessions (site, target);
       CREATE INDEX IF NOT EXISTS qa_review_sessions_created_idx
         ON qa_review_sessions (created_at);
+    `,
+  },
+  {
+    id: 2,
+    // 0.3.0: NOT-ALTERED fingerprints + device-split approvals.
+    ddl: `
+      ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS fp text;
+      ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS approved_pc boolean;
+      ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS approved_mobile boolean;
     `,
   },
 ];
@@ -179,18 +196,32 @@ export function createPostgresStorage(opts: PostgresStorageOptions = {}): QARevi
     async getState(site, target) {
       const db = await ready();
       const rows = await db<
-        { item_id: string; verdict: string | null; note: string | null; variant: number | null }[]
+        {
+          item_id: string;
+          verdict: string | null;
+          note: string | null;
+          variant: number | null;
+          fp: string | null;
+          approved_pc: boolean | null;
+          approved_mobile: boolean | null;
+        }[]
       >`
-        SELECT item_id, verdict, note, variant
+        SELECT item_id, verdict, note, variant, fp, approved_pc, approved_mobile
         FROM qa_review_state
         WHERE site = ${site} AND target = ${target}
       `;
       const map: StoredVerdictMap = {};
       for (const r of rows) {
+        const devices = [
+          ...(r.approved_pc ? ["pc"] : []),
+          ...(r.approved_mobile ? ["mobile"] : []),
+        ];
         map[r.item_id] = {
           verdict: r.verdict ?? undefined,
           note: r.note ?? undefined,
           variant: r.variant ?? undefined,
+          fp: r.fp ?? undefined,
+          approvedDevices: devices.length ? devices : undefined,
         };
       }
       return map;
@@ -206,13 +237,21 @@ export function createPostgresStorage(opts: PostgresStorageOptions = {}): QARevi
       const hasNote = patch.note !== undefined;
       const variant = patch.variant === undefined ? null : patch.variant;
       const hasVariant = patch.variant !== undefined;
+      const fp = patch.fp === undefined ? null : patch.fp;
+      const hasFp = patch.fp !== undefined;
+      const hasDevices = patch.approvedDevices !== undefined;
+      const approvedPc = hasDevices ? (patch.approvedDevices?.includes("pc") ?? false) : null;
+      const approvedMobile = hasDevices ? (patch.approvedDevices?.includes("mobile") ?? false) : null;
       await db`
-        INSERT INTO qa_review_state (site, target, item_id, verdict, note, variant, updated_at)
-        VALUES (${site}, ${target}, ${itemId}, ${verdict}, ${note}, ${variant}, now())
+        INSERT INTO qa_review_state (site, target, item_id, verdict, note, variant, fp, approved_pc, approved_mobile, updated_at)
+        VALUES (${site}, ${target}, ${itemId}, ${verdict}, ${note}, ${variant}, ${fp}, ${approvedPc}, ${approvedMobile}, now())
         ON CONFLICT (site, target, item_id) DO UPDATE SET
           verdict = CASE WHEN ${hasVerdict} THEN EXCLUDED.verdict ELSE qa_review_state.verdict END,
           note = CASE WHEN ${hasNote} THEN EXCLUDED.note ELSE qa_review_state.note END,
           variant = CASE WHEN ${hasVariant} THEN EXCLUDED.variant ELSE qa_review_state.variant END,
+          fp = CASE WHEN ${hasFp} THEN EXCLUDED.fp ELSE qa_review_state.fp END,
+          approved_pc = CASE WHEN ${hasDevices} THEN EXCLUDED.approved_pc ELSE qa_review_state.approved_pc END,
+          approved_mobile = CASE WHEN ${hasDevices} THEN EXCLUDED.approved_mobile ELSE qa_review_state.approved_mobile END,
           updated_at = now()
       `;
     },

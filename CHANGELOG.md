@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.0 - 2026-07-21
+
+- NOT-ALTERED POKA-YOKE: every verdict stores a normalized content fingerprint
+  (anchored items hash the element innerText; task items their question). A
+  re-shown REJECTED item whose content still fingerprints identical gets a
+  prominent SYSTEM-COMPUTED "NOT ALTERED since your rejection" badge (+ the
+  saved rejection note); a differing fingerprint shows a subtle "changed since
+  last review" hint. Judged by hashing, never by an operating agent.
+- DEVICE-SPLIT APPROVALS: `devices?: ("pc"|"mobile")[]` (default pc). One
+  approve button per required device; the item counts approved and advances
+  only when EVERY required device is approved (reject stays whole-item).
+  Plain historical approvals are GRANDFATHERED as fully approved; the round
+  recomputes device-aware on load. Detected device gets the primary-styled
+  hint button (all stay clickable) with per-device tooltips.
+- IMMEDIATE JOURNEY NAV: no "page complete" interstitial - finishing a page
+  navigates instantly to the next pending page; the completion panel shows
+  only when the WHOLE journey is clean.
+- SUB-HIGHLIGHT: `highlightWords?: string[]` wraps matching words/phrases
+  inside the spotlighted element with a secondary mark.
+- CODENAMES + COPY-REF: deterministic two-word codename per (target, itemId)
+  shown on the card with a "Copy ref" button; `codenameFor`/`findByCodename`
+  resolver exported (client + server) and codenames attached to state GET
+  responses.
+- MINIMIZE BUBBLE: replaces the 3s peek - the panel collapses to a draggable
+  floating bubble (mouse + touch pointer events); tap restores. Panel drag is
+  pointer-based now too. Note textarea stretches to fill the card. Tooltips
+  on every icon/abbreviation.
+- Server: migration 2 adds `fp`, `approved_pc`, `approved_mobile` to
+  qa_review_state; state POST accepts `fp` + `approvedDevices`.
+
 ## 0.2.0 - 2026-07-21
 
 - JOURNEY: cross-page review flow. `journey` prop (ordered pages with path /
