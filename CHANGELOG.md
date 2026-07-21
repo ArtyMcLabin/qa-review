@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.6 - 2026-07-21
+
+- MOBILE PREVIEW LIVE VARIANT UPDATE: picking a variation while the phone-frame
+  preview is OPEN now applies the new variant inside the iframe without a
+  close+reopen. The parent posts a same-origin variant message to the iframe;
+  the embedded (dormant) overlay runs the item's OWN variation callback there,
+  so the DOM mutation executes in the iframe document. The frame also syncs the
+  current variant on load. New exports: postVariantToPreview, parseVariantMessage.
+- MINIMIZE BUBBLE DOCKS LEFT: the floating bubble now defaults to the LEFT side
+  of the screen when minimized (still fully draggable).
+
 ## 0.3.5 - 2026-07-21
 
 - JOURNEY PRELOAD: within the final 2 items of a round the overlay prefetches

@@ -56,9 +56,13 @@ export { describeRevisit, type RevisitInfo, type RevisitDisplay } from "./revisi
 export {
   buildMobilePreviewUrl,
   isEmbeddedPreview,
+  postVariantToPreview,
+  parseVariantMessage,
   MOBILE_PREVIEW_WIDTH,
   MOBILE_PREVIEW_HEIGHT,
   PREVIEW_MARKER_PARAM,
+  PREVIEW_MESSAGE_TYPE,
+  type VariantMessage,
 } from "./preview.js";
 export {
   codenameFor,

@@ -83,6 +83,8 @@ import {
   MOBILE_PREVIEW_WIDTH,
   buildMobilePreviewUrl,
   isEmbeddedPreview,
+  parseVariantMessage,
+  postVariantToPreview,
 } from "./preview.js";
 import { codenameFor, formatQARef } from "../shared/codename.js";
 import { ensureQAStyles } from "./styles.js";
@@ -270,6 +272,7 @@ export function QAReviewOverlay({
   const [sessionVerdicts, setSessionVerdicts] = React.useState<Record<string, QAVerdict>>({});
   // Phone-sized same-origin preview of the current page (Approve Mobile on desktop).
   const [mobilePreview, setMobilePreview] = React.useState(false);
+  const previewIframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   const journeyIdx = journey ? journeyIndex(journey.pages, target) : -1;
   const inJourney = !!journey && journeyIdx >= 0;
@@ -282,6 +285,23 @@ export function QAReviewOverlay({
     if (params.has(gateParam)) setActive(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gateParam]);
+
+  // EMBEDDED (inside the mobile-preview iframe): listen for variant messages
+  // from the parent and run the item's OWN variation callback here, so the
+  // DOM mutation executes in THIS (iframe) document - live variant updates
+  // without a close+reopen. Same-origin only.
+  React.useEffect(() => {
+    if (!embedded) return;
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      const msg = parseVariantMessage(e.data);
+      if (!msg) return;
+      const item = items.find((i) => i.id === msg.itemId);
+      item?.variations?.onSelect(msg.variant);
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, [embedded, items]);
 
   // Mirror the theme vars onto <html> so styles applied to PAGE content (the
   // sub-highlight <mark>s) resolve them - they live outside any .qar-theme
@@ -954,7 +974,7 @@ export function QAReviewOverlay({
   if (minimized) {
     const bubbleStyle: React.CSSProperties = bubblePos
       ? { top: bubblePos.y, left: bubblePos.x }
-      : { bottom: 24, right: 24 };
+      : { bottom: 24, left: 24 }; // 0.3.6: dock LEFT by default (still draggable)
     return createPortal(
       <div
         ref={bubbleRef}
@@ -1000,10 +1020,19 @@ export function QAReviewOverlay({
         <div className="qar-theme qar-preview-backdrop" style={themeStyle}>
           <div className="qar-preview-frame">
             <iframe
+              ref={previewIframeRef}
               src={previewUrl}
               title="Mobile preview of the current page"
               width={MOBILE_PREVIEW_WIDTH}
               height={MOBILE_PREVIEW_HEIGHT}
+              onLoad={() => {
+                // Sync the current item's live variant into the freshly loaded
+                // frame so it opens already matching the parent selection.
+                const v = current?.variations?.current;
+                if (current && typeof v === "number") {
+                  postVariantToPreview(previewIframeRef.current, current.id, v);
+                }
+              }}
             />
             <button
               type="button"
@@ -1242,9 +1271,15 @@ export function QAReviewOverlay({
                     <button
                       key={v}
                       type="button"
-                      onClick={() => current.variations!.onSelect(v)}
+                      onClick={() => {
+                        current.variations!.onSelect(v); // apply on the parent page
+                        // ...and propagate into the OPEN preview iframe live.
+                        if (mobilePreview) postVariantToPreview(previewIframeRef.current, current.id, v);
+                      }}
                       className={`qar-var-btn${on ? " qar-on" : ""}`}
-                      data-qatip={`Preview variant ${v} live on the page`}
+                      data-qatip={`Preview variant ${v} live on the page${
+                        mobilePreview ? " and in the phone preview" : ""
+                      }`}
                     >
                       {v}
                     </button>
