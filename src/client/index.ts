@@ -1,4 +1,11 @@
-export { QAReviewOverlay, isClickGesture, type QAReviewOverlayProps } from "./QAReviewOverlay.js";
+export {
+  QAReviewOverlay,
+  isClickGesture,
+  nextMinimized,
+  AUTO_BUBBLE_MAX_WIDTH_PX,
+  type BubbleEvent,
+  type QAReviewOverlayProps,
+} from "./QAReviewOverlay.js";
 export {
   QAStore,
   createQAStore,
@@ -15,6 +22,7 @@ export {
   buildJourneyNavUrl,
   fetchPendingCounts,
   resolveFinishAction,
+  journeyFinishView,
   type FinishAction,
   type QAJourneyConfig,
   type QAJourneyPage,
@@ -31,6 +39,7 @@ export {
   approvedDevicesOf,
   isFullyApproved,
   nextApprovedDevices,
+  toggleDevice,
   detectDevice,
   DEVICE_LABEL,
   DEVICE_TOOLTIP,

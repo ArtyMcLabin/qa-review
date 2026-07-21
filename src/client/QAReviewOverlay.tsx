@@ -55,6 +55,7 @@ import { QAStore, type VerdictMap } from "./store.js";
 import {
   buildJourneyNavUrl,
   fetchPendingCounts,
+  journeyFinishView,
   journeyIndex,
   resolveFinishAction,
   type QAJourneyConfig,
@@ -67,8 +68,8 @@ import {
   approvedDevicesOf,
   detectDevice,
   isFullyApproved,
-  nextApprovedDevices,
   requiredDevices,
+  toggleDevice,
   type QADevice,
 } from "./device.js";
 import { applySubHighlights } from "./highlight.js";
@@ -85,6 +86,38 @@ const CLICK_DRAG_THRESHOLD_PX = 6;
 /** Was the pointer gesture a click (vs a drag)? Exported for tests. */
 export function isClickGesture(dx: number, dy: number): boolean {
   return Math.hypot(dx, dy) < CLICK_DRAG_THRESHOLD_PX;
+}
+
+/** Note-reference text for a picked element: « label » (truncated) or tag. */
+export function pickedElementRef(textContent: string | null, tagName: string): string {
+  const label =
+    (textContent || "").replace(/\s+/g, " ").trim().slice(0, 48) || tagName.toLowerCase();
+  return ` «${label}» `;
+}
+
+/**
+ * Element-pick mode semantics (0.3.1): LEFT click picks and exits the mode;
+ * RIGHT click picks and STAYS for multi-select (context menu suppressed).
+ */
+export function shouldExitPickMode(button: "left" | "right"): boolean {
+  return button === "left";
+}
+
+/** Viewport width at/below which the panel auto-minimizes to the bubble. */
+export const AUTO_BUBBLE_MAX_WIDTH_PX = 767;
+
+export type BubbleEvent =
+  | { type: "viewport"; mobile: boolean }
+  | { type: "manual"; minimized: boolean };
+
+/**
+ * Auto-bubble state machine (0.3.1): a VIEWPORT switch always applies its
+ * auto state (mobile-ish width -> bubble, desktop -> panel); a MANUAL
+ * minimize/restore wins immediately and holds until the NEXT viewport switch.
+ * Exported for tests.
+ */
+export function nextMinimized(current: boolean, ev: BubbleEvent): boolean {
+  return ev.type === "viewport" ? ev.mobile : ev.minimized;
 }
 
 const DEVICE_EMOJI_TIP: Record<string, string> = {
@@ -214,6 +247,8 @@ export function QAReviewOverlay({
   // completion navigates IMMEDIATELY with no interstitial).
   const [journeyCounts, setJourneyCounts] = React.useState<Record<string, number> | null>(null);
   const [journeyComplete, setJourneyComplete] = React.useState(false);
+  // The journey page a full-page navigation is in flight to (loading label).
+  const [navigatingTo, setNavigatingTo] = React.useState<QAJourneyPage | null>(null);
 
   const journeyIdx = journey ? journeyIndex(journey.pages, target) : -1;
   const inJourney = !!journey && journeyIdx >= 0;
@@ -225,6 +260,43 @@ export function QAReviewOverlay({
     const params = new URLSearchParams(window.location.search);
     if (params.has(gateParam)) setActive(true);
   }, [gateParam]);
+
+  // Mirror the theme vars onto <html> so styles applied to PAGE content (the
+  // sub-highlight <mark>s) resolve them - they live outside any .qar-theme
+  // scope. The stylesheet also carries hard fallbacks (0.3.1 fix).
+  React.useEffect(() => {
+    const root = document.documentElement;
+    const vars: Array<[string, string | undefined]> = [
+      ["--qar-accent", theme?.accent],
+      ["--qar-accent-contrast", theme?.accentContrast],
+      ["--qar-panel-bg", theme?.panelBg],
+      ["--qar-input-bg", theme?.inputBg],
+    ];
+    const prev = new Map<string, string>();
+    for (const [k, v] of vars) {
+      if (!v) continue;
+      prev.set(k, root.style.getPropertyValue(k));
+      root.style.setProperty(k, v);
+    }
+    return () => {
+      for (const [k, old] of prev) {
+        if (old) root.style.setProperty(k, old);
+        else root.style.removeProperty(k);
+      }
+    };
+  }, [theme?.accent, theme?.accentContrast, theme?.panelBg, theme?.inputBg]);
+
+  // AUTO-BUBBLE: a viewport switch to mobile-ish width minimizes to the
+  // bubble; switching back restores. Manual minimize/restore wins until the
+  // next switch (see nextMinimized). Only CHANGE events apply - the initial
+  // viewport never force-minimizes.
+  React.useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${AUTO_BUBBLE_MAX_WIDTH_PX}px)`);
+    const onChange = (e: MediaQueryListEvent) =>
+      setMinimized((m) => nextMinimized(m, { type: "viewport", mobile: e.matches }));
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   // Hydrate verdicts and LAND on the first outstanding item. The DURABLE
   // server ledger is the source of truth; localStorage is only a fast cache.
@@ -353,17 +425,18 @@ export function QAReviewOverlay({
     React.useCallback(() => setMinimized(false), []),
   );
 
-  // Element-picker: next click on the page (outside the panel) inserts a
-  // reference to that element into the note textarea at the cursor.
+  // Element-picker: while picking, a click on the page (outside the panel)
+  // inserts a reference to that element into the note textarea at the cursor.
+  // LEFT click picks and EXITS the mode; RIGHT click picks and STAYS in the
+  // mode (multi-select; the native context menu is suppressed).
   React.useEffect(() => {
     if (!picking) return;
-    const onClick = (e: MouseEvent) => {
+    const pick = (e: MouseEvent, exitAfter: boolean) => {
       const el = e.target as HTMLElement | null;
       if (!el || cardRef.current?.contains(el)) return; // ignore the panel itself
       e.preventDefault();
       e.stopPropagation();
-      const label = (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 48) || el.tagName.toLowerCase();
-      const ref = ` «${label}» `;
+      const ref = pickedElementRef(el.textContent, el.tagName);
       const ta = noteRef.current;
       if (ta) {
         const s = ta.selectionStart ?? note.length;
@@ -377,12 +450,18 @@ export function QAReviewOverlay({
       } else {
         setNote((n) => n + ref);
       }
-      setPicking(false);
+      if (exitAfter) setPicking(false);
     };
-    const t = window.setTimeout(() => document.addEventListener("click", onClick, true), 0);
+    const onClick = (e: MouseEvent) => pick(e, shouldExitPickMode("left"));
+    const onContextMenu = (e: MouseEvent) => pick(e, shouldExitPickMode("right"));
+    const t = window.setTimeout(() => {
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("contextmenu", onContextMenu, true);
+    }, 0);
     return () => {
       window.clearTimeout(t);
       document.removeEventListener("click", onClick, true);
+      document.removeEventListener("contextmenu", onContextMenu, true);
     };
   }, [picking, note]);
 
@@ -417,9 +496,24 @@ export function QAReviewOverlay({
   }, [current, note, currentFp, store, advance]);
 
   /**
-   * Device-scoped approval. The item is APPROVED only when every required
-   * device has been approved; until then it stays on screen with a partial
-   * badge (navigation advances only on full approval or reject).
+   * Device approvals already in effect for an item: a full approval implies
+   * every required device (incl. grandfathered plain approvals); otherwise
+   * the recorded partial set.
+   */
+  const effectiveApprovedFor = React.useCallback(
+    (item: QAReviewItem): QADevice[] =>
+      results[item.id]?.verdict === "approve"
+        ? requiredDevices(item)
+        : (partials[item.id] ?? []),
+    [results, partials],
+  );
+
+  /**
+   * Device-scoped approval TOGGLE. Clicking an unapproved device approves it;
+   * clicking an approved one UNSETS it (the item falls back to pending when it
+   * loses full approval). The item is APPROVED - and navigation advances -
+   * only when every required device is approved; rejection stays whole-item.
+   * Every transition persists in real time.
    */
   const approveDevice = React.useCallback(
     (device: QADevice) => {
@@ -428,8 +522,9 @@ export function QAReviewOverlay({
       const trimmed = note.trim() || undefined;
       const variant = current.variations?.current;
       const fp = currentFp ?? itemFingerprint(current, document) ?? undefined;
-      const newDevs = nextApprovedDevices({ approvedDevices: partials[current.id] }, device);
-      const complete = required.every((d) => newDevs.includes(d));
+      const wasFullyApproved = results[current.id]?.verdict === "approve";
+      const { devices: newDevs, action } = toggleDevice(effectiveApprovedFor(current), device);
+      const complete = action === "approve" && required.every((d) => newDevs.includes(d));
       if (fp) setFps((prev) => ({ ...prev, [current.id]: fp }));
       store.cancelPendingNote(current.id);
       setUndoStack((s) => [...s, current.id]);
@@ -445,12 +540,28 @@ export function QAReviewOverlay({
         });
         store.persist(current.id, { verdict: "approve", note: trimmed, variant, fp, approvedDevices: newDevs });
         advance();
+        return;
+      }
+      // Partial approve OR unset: the item is (or returns to) pending.
+      setResults((prev) => {
+        if (!prev[current.id]) return prev;
+        const next = { ...prev };
+        delete next[current.id]; // losing full approval clears the verdict
+        return next;
+      });
+      setPartials((prev) => ({ ...prev, [current.id]: newDevs }));
+      if (action === "unset" && wasFullyApproved) {
+        // The row's verdict must clear: delete it, then re-write the fields we
+        // still know (note/variant/fp + remaining devices). The write-behind
+        // queue guarantees the order server-side.
+        store.remove(current.id);
+        store.persist(current.id, { approvedDevices: newDevs, note: trimmed, variant, fp });
       } else {
-        setPartials((prev) => ({ ...prev, [current.id]: newDevs }));
         store.persist(current.id, { approvedDevices: newDevs, note: trimmed, variant, fp });
       }
+      setFinished(false);
     },
-    [current, note, currentFp, partials, store, advance],
+    [current, note, currentFp, results, partials, store, advance, effectiveApprovedFor],
   );
 
   // Undo the most recent verdict/approval: drop the WHOLE item entry locally +
@@ -484,8 +595,10 @@ export function QAReviewOverlay({
     document.querySelector(current.selector)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [current]);
 
-  // Full-page journey hop, preserving the QA activation query params.
+  // Full-page journey hop, preserving the QA activation query params. The
+  // loading indicator persists from here until the browser unloads this page.
   const navigateTo = React.useCallback((page: QAJourneyPage) => {
+    setNavigatingTo(page);
     window.location.assign(buildJourneyNavUrl(page.path, window.location.search));
   }, []);
 
@@ -505,7 +618,7 @@ export function QAReviewOverlay({
   // the detected device if required and unapproved, else the first unapproved
   // required device. ALL buttons stay clickable regardless.
   const currentRequired = current ? requiredDevices(current) : [];
-  const currentApproved = current ? (partials[current.id] ?? []) : [];
+  const currentApproved = current ? effectiveApprovedFor(current) : [];
   const hintDevice: QADevice | null = current
     ? currentRequired.includes(detectedDevice) && !currentApproved.includes(detectedDevice)
       ? detectedDevice
@@ -638,9 +751,26 @@ export function QAReviewOverlay({
 
   /* ------------------------------ finish panel ------------------------------ */
   if (finished) {
-    // In a journey the overlay navigates away IMMEDIATELY when other pages are
-    // pending - render nothing while that decision is in flight.
-    if (inJourney && !journeyComplete) return null;
+    // In a journey the overlay navigates away IMMEDIATELY when other pages
+    // are pending. Show an UNMISTAKABLE loading state from the moment the
+    // round exhausts until the next page unloads this one - never a blank
+    // screen (0.3.1: a reviewer almost exited thinking the review was done).
+    if (journeyFinishView(inJourney, journeyComplete) === "loading") {
+      return createPortal(
+        <div className="qar-theme qar-finish-backdrop" style={themeStyle}>
+          <div className="qar-loading-card" role="status" aria-live="polite">
+            <div className="qar-spinner" aria-hidden />
+            {navigatingTo
+              ? `Loading ${navigatingTo.label ?? navigatingTo.path}…`
+              : "Checking remaining pages…"}
+            <span className="qar-muted" style={{ fontSize: 11, fontWeight: 400 }}>
+              The review continues on the next page - do not close this tab.
+            </span>
+          </div>
+        </div>,
+        document.body,
+      );
+    }
     return createPortal(
       <div className="qar-theme qar-finish-backdrop" style={themeStyle}>
         <div className="qar-finish-card">
@@ -654,7 +784,7 @@ export function QAReviewOverlay({
 
           <p
             className="qar-finish-autosaved"
-            title="Every verdict was written to the server ledger the moment you decided it"
+            data-qatip="Every verdict was written to the server ledger the moment you decided it"
           >
             <Database size={14} aria-hidden /> Auto-saved to the review database as you go.
           </p>
@@ -686,7 +816,7 @@ export function QAReviewOverlay({
                   onClick={saveToDb}
                   disabled={save.status === "saving" || save.status === "ok"}
                   className="qar-btn-primary"
-                  title="Store a snapshot of this whole run (verdicts are already saved individually)"
+                  data-qatip="Store a snapshot of this whole run (verdicts are already saved individually)"
                 >
                   <Database size={16} aria-hidden />
                   {save.status === "saving"
@@ -702,7 +832,7 @@ export function QAReviewOverlay({
               type="button"
               onClick={copyResults}
               className="qar-btn-outline-accent"
-              title="Copy all verdicts of this page as JSON"
+              data-qatip="Copy all verdicts of this page as JSON"
             >
               <ClipboardCopy size={16} aria-hidden />
               {copied ? "Copied!" : "Copy JSON"}
@@ -744,10 +874,10 @@ export function QAReviewOverlay({
         onPointerDown={onBubbleDragStart}
         role="button"
         aria-label="Restore the QA review panel"
-        title="QA review (tap to restore, drag to move)"
+        data-qatip="QA review (tap to restore, drag to move)"
       >
         <ClipboardCheck size={24} aria-hidden />
-        <span className="qar-bubble-count" title="Items left to review on this page">
+        <span className="qar-bubble-count" data-qatip="Items left to review on this page">
           {Math.max(roundTotal - index, 0)}
         </span>
       </div>,
@@ -806,12 +936,12 @@ export function QAReviewOverlay({
           className="qar-card-header"
           onPointerDown={onCardDragStart}
           style={{ cursor: "move" }}
-          title="Drag to move the panel"
+          data-qatip="Drag to move the panel"
         >
-          <span className="qar-counter" title="Position in this page's review round">
+          <span className="qar-counter" data-qatip="Position in this page's review round">
             {index + 1} of {roundTotal} to review
             {inJourney && (
-              <span className="qar-muted" title="Journey progress across the reviewed pages">
+              <span className="qar-muted" data-qatip="Journey progress across the reviewed pages">
                 {" "}
                 · page {journeyIdx + 1}/{journey!.pages.length}
               </span>
@@ -819,14 +949,14 @@ export function QAReviewOverlay({
           </span>
           <span className="qar-header-tools">
             {current.device && (
-              <span title={DEVICE_EMOJI_TIP[current.device] ?? "target viewport(s)"}>{current.device}</span>
+              <span data-qatip={DEVICE_EMOJI_TIP[current.device] ?? "target viewport(s)"}>{current.device}</span>
             )}
             {!currentIsTask && (
               <button
                 type="button"
                 onClick={jump}
                 aria-label="Jump to the highlighted section"
-                title="Jump: scroll to the highlighted section"
+                data-qatip="Jump: scroll to the highlighted section"
                 className="qar-tool-btn"
               >
                 <Locate size={14} />
@@ -837,7 +967,7 @@ export function QAReviewOverlay({
               onClick={undo}
               disabled={!undoStack.length}
               aria-label="Undo the last approve/reject"
-              title="Undo the last approve/reject (U or Ctrl+Z)"
+              data-qatip="Undo the last approve/reject (U or Ctrl+Z)"
               className="qar-tool-btn"
             >
               <Undo2 size={14} />
@@ -846,7 +976,7 @@ export function QAReviewOverlay({
               type="button"
               onClick={() => setMinimized(true)}
               aria-label="Minimize to a floating bubble"
-              title="Minimize: collapse into a floating bubble (M). Tap the bubble to restore."
+              data-qatip="Minimize: collapse into a floating bubble (M). Tap the bubble to restore."
               className="qar-tool-btn"
             >
               <Minimize2 size={14} />
@@ -855,7 +985,7 @@ export function QAReviewOverlay({
               type="button"
               onClick={exit}
               aria-label="Exit QA mode"
-              title="Exit QA mode (Esc)"
+              data-qatip="Exit QA mode (Esc)"
               className="qar-close-btn"
             >
               <X size={16} />
@@ -865,14 +995,14 @@ export function QAReviewOverlay({
 
         <div
           className="qar-ref-row"
-          title="Stable codename for this item - say or paste it to reference the item in chat"
+          data-qatip="Stable codename for this item - say or paste it to reference the item in chat"
         >
           <span className="qar-codename">{codename}</span>
           <button
             type="button"
             onClick={copyRef}
             className="qar-pick-btn"
-            title="Copy a reference line (codename + target + item id) for chat/issues"
+            data-qatip="Copy a reference line (codename + target + item id) for chat/issues"
           >
             <ClipboardCopy size={12} /> {refCopied ? "Copied!" : "Copy ref"}
           </button>
@@ -906,7 +1036,7 @@ export function QAReviewOverlay({
               href={current.action.href}
               target="_blank"
               rel="noopener noreferrer"
-              title={`Open ${current.action.href} in a new tab`}
+              data-qatip={`Open ${current.action.href} in a new tab`}
             >
               <ExternalLink size={14} aria-hidden /> {current.action.label ?? "Open"}
             </a>
@@ -916,7 +1046,7 @@ export function QAReviewOverlay({
           {fpStatus === "unchanged" && (
             <p
               className="qar-fp-unchanged"
-              title="The content hash equals the hash recorded when you rejected this item - it was not altered"
+              data-qatip="The content hash equals the hash recorded when you rejected this item - it was not altered"
             >
               ⚠ NOT ALTERED since your rejection
               {results[current.id]?.note && <small>Your rejection note: {results[current.id]!.note}</small>}
@@ -925,7 +1055,7 @@ export function QAReviewOverlay({
           {fpStatus === "changed" && (
             <p
               className="qar-fp-changed"
-              title="The content hash differs from the one recorded at your last verdict"
+              data-qatip="The content hash differs from the one recorded at your last verdict"
             >
               Changed since your last review.
             </p>
@@ -940,7 +1070,7 @@ export function QAReviewOverlay({
           {multiDevice && partialApproved.length > 0 && (
             <p
               className="qar-partial-note"
-              title="Approved on some required devices; the item stays pending until all are approved"
+              data-qatip="Approved on some required devices; the item stays pending until all are approved"
             >
               {partialApproved.map((d) => DEVICE_LABEL[d]).join(" + ")} approved ✓ - awaiting{" "}
               {currentRequired
@@ -963,7 +1093,7 @@ export function QAReviewOverlay({
                       type="button"
                       onClick={() => current.variations!.onSelect(v)}
                       className={`qar-var-btn${on ? " qar-on" : ""}`}
-                      title={`Preview variant ${v} live on the page`}
+                      data-qatip={`Preview variant ${v} live on the page`}
                     >
                       {v}
                     </button>
@@ -979,10 +1109,10 @@ export function QAReviewOverlay({
             <button
               type="button"
               onClick={() => setPicking((p) => !p)}
-              title="Click, then click any element on the page to drop a reference to it into the note"
+              data-qatip="Click, then click any element on the page to drop a reference into the note. Left click picks + exits; RIGHT click picks and stays for multi-select."
               className={`qar-pick-btn${picking ? " qar-picking" : ""}`}
             >
-              <Crosshair size={12} /> {picking ? "Click an element…" : "Pick element"}
+              <Crosshair size={12} /> {picking ? "Click an element… (right-click = pick more)" : "Pick element"}
             </button>
           </div>
           <textarea
@@ -1005,7 +1135,7 @@ export function QAReviewOverlay({
             onClick={prev}
             disabled={!hasPrev}
             aria-label="Previous item"
-            title={
+            data-qatip={
               index === 0 && prevJourneyPage
                 ? `Back to ${prevJourneyPage.label ?? prevJourneyPage.path}`
                 : "Previous item (←)"
@@ -1014,7 +1144,7 @@ export function QAReviewOverlay({
           >
             <ChevronLeft size={16} />
           </button>
-          <button type="button" onClick={reject} className="qar-reject-btn" title="Reject this item (R)">
+          <button type="button" onClick={reject} className="qar-reject-btn" data-qatip="Reject this item (R)">
             <X size={16} /> Reject
           </button>
           {currentRequired.map((d) => {
@@ -1029,7 +1159,7 @@ export function QAReviewOverlay({
                 type="button"
                 onClick={() => approveDevice(d)}
                 className={cls}
-                title={`${DEVICE_TOOLTIP[d]}${isHint ? " (A)" : ""}${done ? " - already approved" : ""}`}
+                data-qatip={`${DEVICE_TOOLTIP[d]}${isHint ? " (A)" : ""}${done ? " - already approved" : ""}`}
               >
                 {multiDevice ? (
                   d === "pc" ? (
@@ -1049,7 +1179,7 @@ export function QAReviewOverlay({
             onClick={next}
             disabled={!hasNext}
             aria-label="Next item"
-            title={
+            data-qatip={
               index >= roundTotal - 1 && inJourney
                 ? "Finish this page and continue the journey (→)"
                 : "Next item (→)"
@@ -1061,12 +1191,12 @@ export function QAReviewOverlay({
         </div>
 
         <div className="qar-footer">
-          <span title="Keyboard shortcuts">keys: A approve · R reject · ←/→ · U undo · M minimize · Esc</span>
+          <span data-qatip="Keyboard shortcuts">keys: A approve · R reject · ←/→ · U undo · M minimize · Esc</span>
           <span>
-            <span className="qar-footer-green" title="Items decided in this round">
+            <span className="qar-footer-green" data-qatip="Items decided in this round">
               {decidedInRound}/{roundTotal} this round
             </span>{" "}
-            <span title="Fully approved items on this page">· {approvedCount} approved total</span>
+            <span data-qatip="Fully approved items on this page">· {approvedCount} approved total</span>
           </span>
         </div>
       </div>

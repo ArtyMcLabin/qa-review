@@ -1,6 +1,6 @@
 {
   "name": "@artymclabin/qa-review",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Interactive on-page QA review overlay (spotlight walkthrough, approve/reject verdict ledger) with a framework-agnostic server handler factory and a self-provisioning Postgres store.",
   "license": "MIT",
   "repository": {
@@ -48,6 +48,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "jsdom": "^26",
     "lucide-react": "^1.25.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

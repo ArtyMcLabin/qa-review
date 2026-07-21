@@ -51,6 +51,22 @@ export function nextApprovedDevices(
   return have.includes(device) ? have : [...have, device];
 }
 
+/**
+ * TOGGLE a device approval (0.3.1): clicking an approved device UNSETS it;
+ * clicking an unapproved one approves it. Returns the resulting device set +
+ * which action happened, so the caller can decide whether the item completed
+ * or fell back to pending.
+ */
+export function toggleDevice(
+  effectiveApproved: readonly QADevice[],
+  device: QADevice,
+): { devices: QADevice[]; action: "approve" | "unset" } {
+  if (effectiveApproved.includes(device)) {
+    return { devices: effectiveApproved.filter((d) => d !== device), action: "unset" };
+  }
+  return { devices: [...effectiveApproved, device], action: "approve" };
+}
+
 /** Best-effort current-device detection (visual hint only - never a gate). */
 export function detectDevice(): QADevice {
   try {

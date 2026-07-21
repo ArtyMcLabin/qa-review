@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.1 - 2026-07-21
+
+- JOURNEY LOADING INDICATOR: finishing a page in a journey now shows an
+  unmistakable spinner card ("Loading <next page>…" / "Checking remaining
+  pages…") from the moment the round exhausts until the next page unloads -
+  never a blank screen.
+- DEVICE APPROVE TOGGLE: Approve PC / Approve Mobile (and single Approve)
+  buttons toggle - clicking an approved device UNSETS that approval and the
+  item returns to pending when it loses full approval. Unsets persist in real
+  time (fully-approved rows are cleared and re-written with the remaining
+  device approvals + retained note/variant/fingerprint, in queue order).
+- AUTO-BUBBLE: switching the viewport to a mobile-ish width (<=767px, e.g.
+  devtools responsive emulation) auto-minimizes the panel to the bubble;
+  switching back auto-restores. Manual minimize/restore wins until the next
+  switch.
+- SUB-HIGHLIGHT RENDER FIX: highlight marks live in page content, outside the
+  .qar-theme var scope - the 0.3.0 rule depended on un-fallbacked vars and
+  computed to NO background (invisible highlights). The rule now carries hard
+  var() fallbacks and the overlay mirrors its theme vars onto <html> so marks
+  follow the consumer theme.
+- ELEMENT-PICK MULTI-SELECT: in note pick-element mode, LEFT click keeps the
+  pick-and-exit behavior; RIGHT click picks WITHOUT exiting (native context
+  menu suppressed) so several elements can be referenced in a row.
+- INSTANT TOOLTIPS: all overlay tooltips are zero-delay CSS tooltips
+  ([data-qatip]) instead of the ~500ms native title delay.
+
 ## 0.3.0 - 2026-07-21
 
 - NOT-ALTERED POKA-YOKE: every verdict stores a normalized content fingerprint

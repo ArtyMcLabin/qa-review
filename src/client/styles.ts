@@ -133,8 +133,13 @@ export const QA_STYLES = `
 .qar-fp-unchanged small{display:block;margin-top:4px;font-weight:400;color:#fca5a5;}
 .qar-fp-changed{margin:8px 0 0;font-size:11px;color:#94a3b8;}
 
-/* ---- 0.3.0: sub-highlight mark (injected into the page) ---- */
-mark.qar-subhl{background:${mix(35)};color:inherit;border-radius:3px;padding:0 2px;box-shadow:0 0 0 1px ${mix(60)};}
+/* ---- sub-highlight mark: injected into PAGE content, i.e. OUTSIDE any
+   .qar-theme scope - so it must never depend on scoped vars without a
+   fallback (0.3.1 fix: unfallbacked vars made the mark compute to no
+   background at all = invisible highlights). ---- */
+mark.qar-subhl{background:color-mix(in srgb, var(--qar-accent, #ffde4d) 40%, transparent);
+  color:inherit;border-radius:3px;padding:0 2px;
+  box-shadow:0 0 0 1px color-mix(in srgb, var(--qar-accent, #ffde4d) 70%, transparent);}
 
 /* ---- 0.3.0: codename / copy-ref ---- */
 .qar-ref-row{margin-top:6px;display:flex;align-items:center;gap:6px;font-size:10px;color:#64748b;}
@@ -154,6 +159,23 @@ mark.qar-subhl{background:${mix(35)};color:inherit;border-radius:3px;padding:0 2
   box-shadow:0 0 24px -6px ${mix(60)};cursor:pointer;touch-action:none;user-select:none;}
 .qar-bubble-count{position:absolute;top:-4px;right:-4px;display:flex;align-items:center;justify-content:center;
   min-width:18px;height:18px;border-radius:9999px;background:${ACCENT};color:${ON_ACCENT};font-size:10px;font-weight:700;padding:0 4px;}
+
+/* ---- 0.3.1: journey loading indicator ---- */
+.qar-loading-card{display:flex;flex-direction:column;align-items:center;gap:12px;border-radius:16px;
+  border:1px solid ${mix(40)};background:${PANEL};padding:28px 36px;color:#e2e8f0;font-size:14px;font-weight:700;
+  box-shadow:0 0 50px -10px ${mix(50)};}
+.qar-spinner{width:28px;height:28px;border-radius:9999px;border:3px solid ${mix(25)};
+  border-top-color:${ACCENT};animation:qar-spin .8s linear infinite;}
+@keyframes qar-spin{to{transform:rotate(360deg);}}
+
+/* ---- 0.3.1: INSTANT tooltips (replace the ~500ms native title delay) ---- */
+.qar-theme [data-qatip]{position:relative;}
+.qar-theme [data-qatip]:hover::after{content:attr(data-qatip);position:absolute;bottom:calc(100% + 6px);
+  left:50%;transform:translateX(-50%);z-index:100001;width:max-content;max-width:230px;white-space:normal;
+  border-radius:6px;border:1px solid #334155;background:#0b1020;padding:4px 8px;
+  font-size:11px;font-weight:400;line-height:1.4;color:#e2e8f0;text-align:left;pointer-events:none;}
+.qar-theme .qar-actions [data-qatip]:hover::after,
+.qar-theme .qar-footer [data-qatip]:hover::after{bottom:auto;top:calc(-6px - 2.6em);}
 `;
 
 const STYLE_ID = "qa-review-styles";

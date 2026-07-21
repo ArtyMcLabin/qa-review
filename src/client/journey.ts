@@ -52,6 +52,20 @@ export function nextPendingPage(
   return null;
 }
 
+/**
+ * What the finished-state UI shows in a journey (0.3.1): an UNMISTAKABLE
+ * loading indicator from the moment the round exhausts until the next page
+ * unloads this one - never a blank screen (a reviewer almost exited thinking the
+ * review was done) - or the journey-complete panel.
+ */
+export function journeyFinishView(
+  inJourney: boolean,
+  journeyComplete: boolean,
+): "standard" | "loading" | "complete" {
+  if (!inJourney) return "standard";
+  return journeyComplete ? "complete" : "loading";
+}
+
 export type FinishAction =
   | { kind: "navigate"; page: QAJourneyPage }
   | { kind: "journey-complete" };
