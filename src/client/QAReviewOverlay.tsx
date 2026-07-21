@@ -73,6 +73,7 @@ import {
   type QADevice,
 } from "./device.js";
 import { applySubHighlights } from "./highlight.js";
+import { describeRevisit, type RevisitInfo } from "./revisit.js";
 import { codenameFor, formatQARef } from "../shared/codename.js";
 import { ensureQAStyles } from "./styles.js";
 
@@ -217,6 +218,8 @@ export function QAReviewOverlay({
   const [partials, setPartials] = React.useState<Record<string, QADevice[]>>({});
   // Stored content fingerprints per item (from the ledger / this session).
   const [fps, setFps] = React.useState<Record<string, string>>({});
+  // Re-queue context per item (revisit reason + prior verdict/note).
+  const [revisits, setRevisits] = React.useState<Record<string, RevisitInfo>>({});
   // Current item's LIVE fingerprint (system-computed, drives the badges).
   const [currentFp, setCurrentFp] = React.useState<string | null>(null);
   // The ROUND: ids of the items ACTIONABLE this session (not fully approved
@@ -312,18 +315,24 @@ export function QAReviewOverlay({
       const restored: Record<string, QAResult> = {};
       const parts: Record<string, QADevice[]> = {};
       const storedFps: Record<string, string> = {};
+      const revs: Record<string, RevisitInfo> = {};
       for (const [id, v] of Object.entries(map)) {
         if (v.fp) storedFps[id] = v.fp;
         if (v.verdict) {
           const it = items.find((i) => i.id === id);
           restored[id] = { id, title: it?.title ?? id, verdict: v.verdict, note: v.note, variant: v.variant };
-        } else if (v.approvedDevices?.length) {
-          parts[id] = approvedDevicesOf(v);
+        } else {
+          if (v.approvedDevices?.length) parts[id] = approvedDevicesOf(v);
+          // Re-queue context: why is this item back + what did they say last time.
+          if (v.revisitReason || v.prevVerdict) {
+            revs[id] = { reason: v.revisitReason, prevVerdict: v.prevVerdict, prevNote: v.note };
+          }
         }
       }
       setResults(restored);
       setPartials(parts);
       setFps(storedFps);
+      setRevisits(revs);
       const rIds = items
         .filter((i) => !isFullyApproved(map[i.id], requiredDevices(i)))
         .map((i) => i.id);
@@ -891,9 +900,15 @@ export function QAReviewOverlay({
   const hasNext = index < roundTotal - 1 || inJourney;
   const hasPrev = index > 0 || !!prevJourneyPage;
   const codename = codenameFor(target, current.id);
-  // NOT-ALTERED poka-yoke: system-computed comparison of the fingerprint saved
-  // with the last REJECTION vs the page content right now.
-  const fpStatus = existing === "reject" ? fingerprintStatus(fps[current.id], currentFp) : null;
+  // NOT-ALTERED poka-yoke: system-computed comparison of the stored
+  // fingerprint (last verdict / pre-invalidation) vs the page content NOW.
+  const currentRevisit = !existing ? revisits[current.id] : undefined;
+  const fpStatus =
+    existing === "reject" || currentRevisit
+      ? fingerprintStatus(fps[current.id], currentFp)
+      : null;
+  // Re-queue context card block ("Back for review: ...", prior verdict).
+  const revisitDisplay = describeRevisit(currentRevisit, fpStatus);
   const partialApproved = currentApproved.filter((d) => currentRequired.includes(d));
   const multiDevice = currentRequired.length > 1;
 
@@ -1042,8 +1057,29 @@ export function QAReviewOverlay({
             </a>
           )}
 
+          {/* Re-queue context (0.3.3): WHY the item is back + prior verdict. */}
+          {revisitDisplay?.headline && (
+            <p className="qar-revisit" data-qatip="Why this item was re-queued for your review">
+              ↻ {revisitDisplay.headline}
+            </p>
+          )}
+          {revisitDisplay?.notAltered && (
+            <p
+              className="qar-fp-unchanged"
+              data-qatip="The content hash equals the hash recorded at your rejection - it was not altered"
+            >
+              ⚠ NOT ALTERED since your rejection
+              {currentRevisit?.prevNote && <small>Your rejection note: {currentRevisit.prevNote}</small>}
+            </p>
+          )}
+          {revisitDisplay?.prior && !revisitDisplay.notAltered && (
+            <p className="qar-revisit-prior" data-qatip="Your verdict before this item was re-queued">
+              {revisitDisplay.prior}
+            </p>
+          )}
+
           {/* NOT-ALTERED poka-yoke (system-computed, never an agent's claim). */}
-          {fpStatus === "unchanged" && (
+          {!revisitDisplay && fpStatus === "unchanged" && (
             <p
               className="qar-fp-unchanged"
               data-qatip="The content hash equals the hash recorded when you rejected this item - it was not altered"
@@ -1052,7 +1088,7 @@ export function QAReviewOverlay({
               {results[current.id]?.note && <small>Your rejection note: {results[current.id]!.note}</small>}
             </p>
           )}
-          {fpStatus === "changed" && (
+          {!revisitDisplay && fpStatus === "changed" && (
             <p
               className="qar-fp-changed"
               data-qatip="The content hash differs from the one recorded at your last verdict"

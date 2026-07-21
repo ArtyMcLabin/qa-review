@@ -47,6 +47,7 @@ export {
   type QADevice,
 } from "./device.js";
 export { findMatchRanges, applySubHighlights, type MatchRange } from "./highlight.js";
+export { describeRevisit, type RevisitInfo, type RevisitDisplay } from "./revisit.js";
 export {
   codenameFor,
   findByCodename,

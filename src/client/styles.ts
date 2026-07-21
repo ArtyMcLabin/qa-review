@@ -176,6 +176,11 @@ mark.qar-subhl{background:color-mix(in srgb, var(--qar-accent, #ffde4d) 40%, tra
   font-size:11px;font-weight:400;line-height:1.4;color:#e2e8f0;text-align:left;pointer-events:none;}
 .qar-theme .qar-actions [data-qatip]:hover::after,
 .qar-theme .qar-footer [data-qatip]:hover::after{bottom:auto;top:calc(-6px - 2.6em);}
+
+/* ---- 0.3.3: re-queue context ---- */
+.qar-revisit{margin:8px 0 0;border-radius:6px;border:1px solid ${mix(55)};background:${mix(12)};
+  padding:6px 8px;font-size:12px;font-weight:700;color:${ACCENT};}
+.qar-revisit-prior{margin:6px 0 0;font-size:11px;color:#94a3b8;}
 `;
 
 const STYLE_ID = "qa-review-styles";

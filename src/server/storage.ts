@@ -17,6 +17,10 @@ export interface StoredVerdict {
   approvedDevices?: string[];
   /** Deterministic two-word codename (computed, not stored). */
   codename?: string;
+  /** Why the item was re-queued (set by the invalidation call). */
+  revisitReason?: string;
+  /** Verdict that was in effect before the invalidation. */
+  prevVerdict?: string;
 }
 
 /** item id -> stored verdict. */
@@ -63,6 +67,13 @@ export interface QAReviewStorage {
   getState(site: string, target: string): Promise<StoredVerdictMap>;
   upsertState(site: string, target: string, itemId: string, patch: VerdictPatch): Promise<void>;
   deleteState(site: string, target: string, itemId: string): Promise<void>;
+  /**
+   * Invalidate WITH context (0.3.3): clear the verdict + device approvals so
+   * the item re-queues, but KEEP the row - prior verdict moves to
+   * prev_verdict, the note and fingerprint stay, and revisit_reason records
+   * why it is back. (Plain deleteState remains the no-context undo.)
+   */
+  invalidateState(site: string, target: string, itemId: string, revisitReason: string): Promise<void>;
   insertSession(site: string, session: NewSession): Promise<{ id: string }>;
   listSessions(site: string, target?: string, limit?: number): Promise<SessionSummary[]>;
 }
@@ -115,6 +126,14 @@ const MIGRATIONS: ReadonlyArray<{ id: number; ddl: string }> = [
       ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS fp text;
       ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS approved_pc boolean;
       ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS approved_mobile boolean;
+    `,
+  },
+  {
+    id: 3,
+    // 0.3.3: re-queue context (revisit reason + prior verdict).
+    ddl: `
+      ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS revisit_reason text;
+      ALTER TABLE qa_review_state ADD COLUMN IF NOT EXISTS prev_verdict text;
     `,
   },
 ];
@@ -204,9 +223,11 @@ export function createPostgresStorage(opts: PostgresStorageOptions = {}): QARevi
           fp: string | null;
           approved_pc: boolean | null;
           approved_mobile: boolean | null;
+          revisit_reason: string | null;
+          prev_verdict: string | null;
         }[]
       >`
-        SELECT item_id, verdict, note, variant, fp, approved_pc, approved_mobile
+        SELECT item_id, verdict, note, variant, fp, approved_pc, approved_mobile, revisit_reason, prev_verdict
         FROM qa_review_state
         WHERE site = ${site} AND target = ${target}
       `;
@@ -222,6 +243,8 @@ export function createPostgresStorage(opts: PostgresStorageOptions = {}): QARevi
           variant: r.variant ?? undefined,
           fp: r.fp ?? undefined,
           approvedDevices: devices.length ? devices : undefined,
+          revisitReason: r.revisit_reason ?? undefined,
+          prevVerdict: r.prev_verdict ?? undefined,
         };
       }
       return map;
@@ -252,6 +275,8 @@ export function createPostgresStorage(opts: PostgresStorageOptions = {}): QARevi
           fp = CASE WHEN ${hasFp} THEN EXCLUDED.fp ELSE qa_review_state.fp END,
           approved_pc = CASE WHEN ${hasDevices} THEN EXCLUDED.approved_pc ELSE qa_review_state.approved_pc END,
           approved_mobile = CASE WHEN ${hasDevices} THEN EXCLUDED.approved_mobile ELSE qa_review_state.approved_mobile END,
+          revisit_reason = CASE WHEN ${hasVerdict} THEN NULL ELSE qa_review_state.revisit_reason END,
+          prev_verdict = CASE WHEN ${hasVerdict} THEN NULL ELSE qa_review_state.prev_verdict END,
           updated_at = now()
       `;
     },
@@ -261,6 +286,25 @@ export function createPostgresStorage(opts: PostgresStorageOptions = {}): QARevi
       await db`
         DELETE FROM qa_review_state
         WHERE site = ${site} AND target = ${target} AND item_id = ${itemId}
+      `;
+    },
+
+    async invalidateState(site, target, itemId, revisitReason) {
+      const db = await ready();
+      // Keep the row: verdict -> prev_verdict, approvals cleared, note + fp
+      // retained (the fingerprint anchors the NOT-ALTERED comparison), reason
+      // recorded. Upsert so a reason can also be attached to a never-reviewed
+      // item ("reassess this" guidance).
+      await db`
+        INSERT INTO qa_review_state (site, target, item_id, revisit_reason, updated_at)
+        VALUES (${site}, ${target}, ${itemId}, ${revisitReason}, now())
+        ON CONFLICT (site, target, item_id) DO UPDATE SET
+          prev_verdict = COALESCE(qa_review_state.verdict, qa_review_state.prev_verdict),
+          verdict = NULL,
+          approved_pc = NULL,
+          approved_mobile = NULL,
+          revisit_reason = ${revisitReason},
+          updated_at = now()
       `;
     },
 

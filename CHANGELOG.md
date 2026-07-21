@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3 - 2026-07-21
+
+- RE-QUEUE CONTEXT: invalidation (state POST verdict:null) accepts an optional
+  `revisitReason`. With a reason the row is KEPT - verdict moves to
+  prev_verdict, note + fingerprint stay, reason is stored - and the card for
+  the re-queued item prominently shows "Back for review: <reason>" plus
+  "Your last verdict: <verdict> - '<note>'", combined with the fingerprint
+  badges (NOT ALTERED / changed). No reason + changed fingerprint shows a
+  generic "Content changed since your last review." Recording a new verdict
+  consumes the context; verdict:null WITHOUT a reason keeps the old
+  hard-delete (undo). State GET returns revisitReason + prevVerdict for
+  audits. Migration id 3: revisit_reason + prev_verdict columns.
+
 ## 0.3.2 - 2026-07-21
 
 - CRITICAL journey fix: the walkthrough ping-ponged forever between a page

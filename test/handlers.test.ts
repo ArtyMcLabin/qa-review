@@ -21,19 +21,35 @@ function fakeStorage() {
     async upsertState(site, target, itemId, patch: VerdictPatch) {
       const bucket = state.get(key(site, target)) ?? {};
       const prev = bucket[itemId] ?? {};
+      const hasVerdict = patch.verdict !== undefined;
       bucket[itemId] = {
-        verdict: patch.verdict !== undefined ? patch.verdict : prev.verdict,
+        verdict: hasVerdict ? patch.verdict : prev.verdict,
         note: patch.note !== undefined ? (patch.note ?? undefined) : prev.note,
         variant: patch.variant !== undefined ? (patch.variant ?? undefined) : prev.variant,
         fp: patch.fp !== undefined ? (patch.fp ?? undefined) : prev.fp,
         approvedDevices:
           patch.approvedDevices !== undefined ? (patch.approvedDevices ?? undefined) : prev.approvedDevices,
+        // A new verdict consumes any pending revisit context.
+        revisitReason: hasVerdict ? undefined : prev.revisitReason,
+        prevVerdict: hasVerdict ? undefined : prev.prevVerdict,
       };
       state.set(key(site, target), bucket);
     },
     async deleteState(site, target, itemId) {
       const bucket = state.get(key(site, target));
       if (bucket) delete bucket[itemId];
+    },
+    async invalidateState(site, target, itemId, revisitReason) {
+      const bucket = state.get(key(site, target)) ?? {};
+      const prev = bucket[itemId] ?? {};
+      bucket[itemId] = {
+        note: prev.note,
+        variant: prev.variant,
+        fp: prev.fp,
+        prevVerdict: prev.verdict ?? prev.prevVerdict,
+        revisitReason,
+      };
+      state.set(key(site, target), bucket);
     },
     async insertSession(site, session) {
       const id = `s${sessions.length + 1}`;

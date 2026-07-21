@@ -25,6 +25,10 @@ export interface PersistedVerdict {
   approvedDevices?: string[];
   /** Server-computed codename (present in state GET responses; read-only). */
   codename?: string;
+  /** Why the item was re-queued (set via invalidation; read-only here). */
+  revisitReason?: string;
+  /** Verdict in effect before the invalidation (read-only here). */
+  prevVerdict?: string;
 }
 
 /** item id -> persisted verdict/variant/note. */

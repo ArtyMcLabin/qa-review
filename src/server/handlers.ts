@@ -6,8 +6,11 @@
 // Endpoint semantics (the durable verdict ledger):
 //   state GET  ?target=...                       -> { ok, verdicts: {itemId: {verdict,note,variant}} }
 //   state POST { target, itemId, verdict, ... }  -> merge-upsert one item
-//   state POST { target, itemId, verdict: null } -> DELETE that item (single-item
-//        invalidation - the ONLY way to make an approved item reappear).
+//   state POST { target, itemId, verdict: null } -> invalidate that ONE item
+//        (the only way to make an approved item reappear). With a
+//        `revisitReason` the row is KEPT (prior verdict + note + fingerprint
+//        preserved, reason recorded) so the card can tell the reviewer WHY it
+//        is back; without a reason the row is deleted (undo).
 //   🚨 Deliberately NO reset-all operation: the ledger is never wiped in bulk.
 //   submit POST { target, results, ... }         -> insert one session snapshot
 //   sessions GET ?target=&limit=                 -> list recent session summaries
@@ -110,6 +113,7 @@ export function createQAReviewHandlers(opts: QAReviewHandlerOptions): QAReviewHa
         variant?: number;
         fp?: string;
         approvedDevices?: unknown;
+        revisitReason?: string;
       };
       try {
         body = await req.json();
@@ -123,8 +127,16 @@ export function createQAReviewHandlers(opts: QAReviewHandlerOptions): QAReviewHa
       }
 
       try {
-        // verdict === null -> invalidate (delete) this single item.
+        // verdict === null -> invalidate this single item. A revisitReason
+        // keeps the row with re-queue context (0.3.3); no reason = plain
+        // delete (undo semantics).
         if (body.verdict === null) {
+          const reason =
+            typeof body.revisitReason === "string" ? body.revisitReason.trim().slice(0, 500) : "";
+          if (reason) {
+            await storage.invalidateState(site, target, itemId, reason);
+            return json({ ok: true, invalidated: itemId, revisitReason: reason });
+          }
           await storage.deleteState(site, target, itemId);
           return json({ ok: true, deleted: itemId });
         }
