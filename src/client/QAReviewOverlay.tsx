@@ -294,6 +294,7 @@ export function QAReviewOverlay({
   // next switch (see nextMinimized). Only CHANGE events apply - the initial
   // viewport never force-minimizes.
   React.useEffect(() => {
+    if (typeof window.matchMedia !== "function") return; // older embedders / test DOMs
     const mq = window.matchMedia(`(max-width: ${AUTO_BUBBLE_MAX_WIDTH_PX}px)`);
     const onChange = (e: MediaQueryListEvent) =>
       setMinimized((m) => nextMinimized(m, { type: "viewport", mobile: e.matches }));
@@ -883,12 +884,10 @@ export function QAReviewOverlay({
         onPointerDown={onBubbleDragStart}
         role="button"
         aria-label="Restore the QA review panel"
-        data-qatip="QA review (tap to restore, drag to move)"
+        data-qatip="QA review - items left on this page (tap to restore, drag to move)"
       >
         <ClipboardCheck size={24} aria-hidden />
-        <span className="qar-bubble-count" data-qatip="Items left to review on this page">
-          {Math.max(roundTotal - index, 0)}
-        </span>
+        <span className="qar-bubble-count">{Math.max(roundTotal - index, 0)}</span>
       </div>,
       document.body,
     );
@@ -947,16 +946,16 @@ export function QAReviewOverlay({
           height: CARD_H,
         }}
       >
-        <div
-          className="qar-card-header"
-          onPointerDown={onCardDragStart}
-          style={{ cursor: "move" }}
-          data-qatip="Drag to move the panel"
-        >
-          <span className="qar-counter" data-qatip="Position in this page's review round">
+        <div className="qar-card-header" onPointerDown={onCardDragStart} style={{ cursor: "move" }}>
+          <span
+            className="qar-counter"
+            data-qatip={`Position in this page's review round${
+              inJourney ? " · journey progress across the reviewed pages" : ""
+            }. Drag this bar to move the panel.`}
+          >
             {index + 1} of {roundTotal} to review
             {inJourney && (
-              <span className="qar-muted" data-qatip="Journey progress across the reviewed pages">
+              <span className="qar-muted">
                 {" "}
                 · page {journeyIdx + 1}/{journey!.pages.length}
               </span>
@@ -1008,11 +1007,13 @@ export function QAReviewOverlay({
           </span>
         </div>
 
-        <div
-          className="qar-ref-row"
-          data-qatip="Stable codename for this item - say or paste it to reference the item in chat"
-        >
-          <span className="qar-codename">{codename}</span>
+        <div className="qar-ref-row">
+          <span
+            className="qar-codename"
+            data-qatip="Stable codename for this item - say or paste it to reference the item in chat"
+          >
+            {codename}
+          </span>
           <button
             type="button"
             onClick={copyRef}

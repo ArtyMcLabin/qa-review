@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.4 - 2026-07-21
+
+- TOOLTIP DE-NESTING: exactly one tooltip per hover point. Container elements
+  no longer carry tooltips that overlap a child control's (Copy-ref row ->
+  codename span; card header -> counter; bubble -> single carrier), plus a
+  CSS :has() guard suppresses any ancestor tooltip while a descendant tooltip
+  target is hovered. Rendered-DOM invariant test: no [data-qatip] element may
+  have a [data-qatip] ancestor.
+- COPY-REF FORMAT: the copied reference is now brace-wrapped:
+  `{ qa-ref: <codename> | <target> # <itemId> | <title> }`.
+- Robustness: the auto-bubble listener no-ops when matchMedia is unavailable.
+
 ## 0.3.3 - 2026-07-21
 
 - RE-QUEUE CONTEXT: invalidation (state POST verdict:null) accepts an optional

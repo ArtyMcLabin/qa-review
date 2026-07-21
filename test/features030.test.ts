@@ -93,7 +93,7 @@ describe("codenames", () => {
 
   it("formatQARef emits the canonical copy-ref line", () => {
     const line = formatQARef("site:/", "hero", "Hero section");
-    expect(line).toBe(`qa-ref: ${codenameFor("site:/", "hero")} | site:/ # hero | Hero section`);
+    expect(line).toBe(`{ qa-ref: ${codenameFor("site:/", "hero")} | site:/ # hero | Hero section }`);
   });
 });
 

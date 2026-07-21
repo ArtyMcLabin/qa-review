@@ -170,6 +170,9 @@ mark.qar-subhl{background:color-mix(in srgb, var(--qar-accent, #ffde4d) 40%, tra
 
 /* ---- 0.3.1: INSTANT tooltips (replace the ~500ms native title delay) ---- */
 .qar-theme [data-qatip]{position:relative;}
+/* Exactly ONE tooltip per hover point: suppress an ancestor's tooltip while a
+   descendant tooltip target is hovered (0.3.4 double-tooltip fix). */
+.qar-theme [data-qatip]:has([data-qatip]:hover)::after{display:none;}
 .qar-theme [data-qatip]:hover::after{content:attr(data-qatip);position:absolute;bottom:calc(100% + 6px);
   left:50%;transform:translateX(-50%);z-index:100001;width:max-content;max-width:230px;white-space:normal;
   border-radius:6px;border:1px solid #334155;background:#0b1020;padding:4px 8px;

@@ -65,5 +65,5 @@ export function findByCodename<T extends CodenameEntry>(
 
 /** Canonical copy-reference line for an item ("Copy ref" button payload). */
 export function formatQARef(target: string, itemId: string, title: string): string {
-  return `qa-ref: ${codenameFor(target, itemId)} | ${target} # ${itemId} | ${title}`;
+  return `{ qa-ref: ${codenameFor(target, itemId)} | ${target} # ${itemId} | ${title} }`;
 }
