@@ -85,6 +85,7 @@ import {
   isEmbeddedPreview,
   parseVariantMessage,
   postVariantToPreview,
+  scrollPreviewToSelector,
 } from "./preview.js";
 import { codenameFor, formatQARef } from "../shared/codename.js";
 import { ensureQAStyles } from "./styles.js";
@@ -684,6 +685,16 @@ export function QAReviewOverlay({
     [mobilePreview],
   );
 
+  // Keep the OPEN preview aimed at the current item (0.3.7). previewUrl is keyed
+  // only on `mobilePreview`, so advancing to the next item does NOT reload the
+  // iframe and the onLoad scroll never fires again - without this the frame
+  // stays parked wherever the previous item left it.
+  const currentSelector = current?.selector;
+  React.useEffect(() => {
+    if (!mobilePreview || !currentSelector) return;
+    return scrollPreviewToSelector(previewIframeRef.current, currentSelector);
+  }, [mobilePreview, currentSelector]);
+
   // The device whose approval is most actionable NOW (visual hint + "A" key):
   // the detected device if required and unapproved, else the first unapproved
   // required device. ALL buttons stay clickable regardless.
@@ -1032,6 +1043,9 @@ export function QAReviewOverlay({
                 if (current && typeof v === "number") {
                   postVariantToPreview(previewIframeRef.current, current.id, v);
                 }
+                // ...and scroll the frame to the section under review, rather
+                // than leaving the reviewer at the top of the page (0.3.7).
+                scrollPreviewToSelector(previewIframeRef.current, current?.selector);
               }}
             />
             <button
