@@ -55,15 +55,19 @@ switches never lose progress.
 
 ## Install
 
-Not yet on npm. Install from git:
+```bash
+npm install @artymclabin/qa-review
+# or
+pnpm add @artymclabin/qa-review
+```
+
+Install straight from git if you want an unreleased commit:
 
 ```bash
 npm install github:ArtyMcLabin/qa-review
-# or
-pnpm add github:ArtyMcLabin/qa-review
 ```
 
-For CI environments without access to this repository, vendor a tarball:
+For CI environments without registry access, vendor a tarball:
 
 ```bash
 # in this repo

@@ -25,6 +25,9 @@
       "default": "./dist/server/index.js"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "README.md",
