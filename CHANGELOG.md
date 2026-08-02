@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.7 - 2026-07-30
+
+- MOBILE PREVIEW SCROLLS TO THE ITEM: the phone-frame iframe loaded each page
+  at its top, so opening the preview showed the header rather than the section
+  under review. scrollPreviewToSelector() now reaches into the same-origin
+  frame and centres the current item's element. It RETRIES rather than
+  scrolling once, because the iframe fires load before hydration and before
+  images settle and an early scroll gets undone by the layout shift that
+  follows; it keeps scrolling for a couple of rounds after a successful hit for
+  the same reason, and is bounded at 12 attempts so a genuinely absent element
+  (desktop-only items) cannot loop forever. Returns a cleanup that cancels
+  pending retries.
+- Wired both on iframe load (opening the preview) and on a selector-keyed
+  effect (advancing to the next item while the preview stays open, where the
+  iframe is deliberately not reloaded and load never fires again).
+
 ## 0.3.6 - 2026-07-21
 
 - MOBILE PREVIEW LIVE VARIANT UPDATE: picking a variation while the phone-frame
