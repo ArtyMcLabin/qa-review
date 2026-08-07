@@ -16,13 +16,17 @@ import type {
 /* --------------------------- display logic (card) -------------------------- */
 
 describe("describeRevisit (card display)", () => {
-  it("reason headlines prominently + prior verdict with note", () => {
+  it("reason headlines prominently + prior verdict, note handed back separately", () => {
     const d = describeRevisit(
       { reason: "over-bolding trimmed to one phrase", prevVerdict: "reject", prevNote: "too much bold" },
       "changed",
     );
     expect(d?.headline).toBe("Back for review: over-bolding trimmed to one phrase");
-    expect(d?.prior).toBe('Your last verdict: reject - "too much bold"');
+    // 0.4.0: the note is NOT inlined here - the card renders it collapsed, and
+    // it also sits in the textarea below, so inlining made the reviewer read
+    // their own note up to three times per card.
+    expect(d?.prior).toBe("Your last verdict: reject");
+    expect(d?.priorNote).toBe("too much bold");
     expect(d?.notAltered).toBe(false);
   });
 
@@ -45,7 +49,28 @@ describe("describeRevisit (card display)", () => {
 
   it("reason on a never-reviewed item shows the reason alone", () => {
     const d = describeRevisit({ reason: "new acceptance criteria" }, null);
-    expect(d).toEqual({ headline: "Back for review: new acceptance criteria", prior: null, notAltered: false });
+    expect(d).toEqual({
+      headline: "Back for review: new acceptance criteria",
+      prior: null,
+      priorNote: null,
+      notAltered: false,
+    });
+  });
+
+  // 0.4.0: walking back over your own verdicts inside ONE pass is navigation,
+  // not a revisit. Rejecting an item, moving on, then pressing Prev used to say
+  // "NOT ALTERED since your rejection" - true, and useless, because nobody had
+  // been given the chance to alter anything yet.
+  it("same round -> nothing at all, even for a reject on unchanged content", () => {
+    expect(describeRevisit({ prevVerdict: "reject", prevRound: 2 }, "unchanged", 2)).toBeNull();
+    expect(describeRevisit({ reason: "please reassess", prevRound: 2 }, "changed", 2)).toBeNull();
+  });
+
+  it("a LATER round still speaks, and an unknown round on either side does too", () => {
+    expect(describeRevisit({ prevVerdict: "reject", prevRound: 1 }, "unchanged", 2)?.notAltered).toBe(true);
+    // pre-0.4.0 rows carry no round - those verdicts are genuinely from earlier
+    expect(describeRevisit({ prevVerdict: "reject" }, "unchanged", 2)?.notAltered).toBe(true);
+    expect(describeRevisit({ prevVerdict: "reject", prevRound: 2 }, "unchanged")?.notAltered).toBe(true);
   });
 
   it("null when there is nothing to say", () => {
