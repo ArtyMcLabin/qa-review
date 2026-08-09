@@ -1,11 +1,16 @@
 """
 npm web login, with the two things the earlier attempts got wrong.
 
-1. CARRY THE COOKIE. The registry sits behind Cloudflare and the first poll
-   response sets `__cf_bm` (bot management). urllib keeps no cookie jar by
-   default, so every subsequent poll arrives as a fresh unknown client and gets
-   404 `{"message":"not found"}` - which is indistinguishable from an expired
-   session and is exactly how three live logins got declared dead.
+1. THE SESSION LIVES ABOUT FIVE MINUTES. Measured: 48 clean 202 polls at 6s
+   intervals, then 404 `{"message":"not found"}`. So the 404 is a genuine expiry.
+   It is NOT a header problem and NOT Cloudflare bot management - both were
+   confidently blamed first, and both were wrong. The cookie jar below is kept
+   because carrying `__cf_bm` is correct behaviour for a Cloudflare-fronted API,
+   not because it fixed anything.
+
+   The real consequence is about WORKFLOW, not code: do not pre-generate a login
+   URL and wait for a human to get round to it. Ask first, generate when they say
+   they are ready, and tell them it is good for about five minutes.
 
 2. PROVE IT SURVIVES BEFORE HANDING THE URL TO A HUMAN. The login URL is only
    printed after the poller has held a session for ~a minute of real polling. A

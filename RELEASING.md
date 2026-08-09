@@ -53,9 +53,18 @@ POST https://registry.npmjs.org/-/v1/login    headers: npm-auth-type: web
 GET  <doneUrl>   -> 202 + Retry-After while pending, 200 {"token": "npm_..."} on approval
 ```
 
-Print `loginUrl` to Arty verbatim, poll `doneUrl` in the background, and write the
-token to `~/.npmrc` as `//registry.npmjs.org/:_authToken=<token>`. Working script:
-`scripts/npm-weblogin.py` (`start` / `poll <doneUrl>`).
+Print `loginUrl` to Arty verbatim, poll `doneUrl`, and write the token to
+`~/.npmrc` as `//registry.npmjs.org/:_authToken=<token>`. Script:
+`scripts/npm-weblogin.py`.
+
+🚨 **THE SESSION LIVES ABOUT FIVE MINUTES.** Measured 2026-08-09: a session polled
+cleanly (HTTP 202) 48 times at 6s intervals and then returned
+`404 {"message":"not found"}` - so the 404 is a real expiry, not a bot-management
+or header problem. Consequence for the workflow: **do not pre-generate a link and
+wait for the human to get round to it.** Ask first, generate only when they say
+they are at the keyboard, and tell them the link is good for about five minutes.
+Four links were burned in one session learning this, each handed over with a
+different confident and wrong explanation.
 
 🚨 npm is restricting **tokens that bypass 2FA**. If publishing later fails with a
 message naming a *token type* ("granular access token with bypass 2fa enabled is
