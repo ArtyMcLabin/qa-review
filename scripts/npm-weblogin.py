@@ -30,8 +30,14 @@ def _req(url, data=None, method=None):
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("user-agent", UA)
     req.add_header("npm-auth-type", "web")
-    req.add_header("content-type", "application/json")
     req.add_header("accept", "*/*")
+    # 🚨 CONTENT-TYPE ONLY ON THE POST. Sending `content-type: application/json`
+    # on the GET to /-/v1/done makes the registry answer 404 "not found" - i.e.
+    # exactly what a dead session looks like, on a session that is alive and
+    # polling fine without the header. Cost of not knowing: a login URL handed
+    # over as working while the poller had already given up on it.
+    if data is not None:
+        req.add_header("content-type", "application/json")
     return req
 
 
