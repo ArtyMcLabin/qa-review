@@ -1,52 +1,44 @@
 """
-npm's web login, driven directly over HTTP.
+npm web login, with the two things the earlier attempts got wrong.
 
-WHY NOT `npm login --auth-type=web`: the CLI prints the login URL and then, when
-it cannot open a browser (any non-TTY stdin - which is every backgrounded agent
-shell), silently falls back to the legacy username/password prompt and dies on
-EOF. The URL it printed is real but nothing is left listening for the token, so
-the click accomplishes nothing. Doing the same handshake here means the poller
-is ours and survives.
+1. CARRY THE COOKIE. The registry sits behind Cloudflare and the first poll
+   response sets `__cf_bm` (bot management). urllib keeps no cookie jar by
+   default, so every subsequent poll arrives as a fresh unknown client and gets
+   404 `{"message":"not found"}` - which is indistinguishable from an expired
+   session and is exactly how three live logins got declared dead.
 
-  POST /-/v1/login            -> {loginUrl, doneUrl}
-  GET  doneUrl                -> 202 + Retry-After while pending, 200 {token}
-
-Usage:
-  python npm-weblogin.py start   # prints loginUrl + doneUrl
-  python npm-weblogin.py poll <doneUrl>   # blocks, writes ~/.npmrc on success
+2. PROVE IT SURVIVES BEFORE HANDING THE URL TO A HUMAN. The login URL is only
+   printed after the poller has held a session for ~a minute of real polling. A
+   link that dies thirty seconds after it is handed over costs someone a click
+   and their trust; a link that has already been kept alive costs nothing.
 """
 
+import http.cookiejar
 import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 REGISTRY = "https://registry.npmjs.org"
 UA = "npm/10.9.0 node/v22.17.0 win32 x64 workspaces/false"
+PROVE_POLLS = 8          # ~50s of successful polling before the URL is printed
+INTERVAL = 6             # registry asks for 3; poll slower, not faster
+
+opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+)
 
 
 def _req(url, data=None, method=None):
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("user-agent", UA)
-    req.add_header("npm-auth-type", "web")
     req.add_header("accept", "*/*")
-    # 🚨 CONTENT-TYPE ONLY ON THE POST. Sending `content-type: application/json`
-    # on the GET to /-/v1/done makes the registry answer 404 "not found" - i.e.
-    # exactly what a dead session looks like, on a session that is alive and
-    # polling fine without the header. Cost of not knowing: a login URL handed
-    # over as working while the poller had already given up on it.
     if data is not None:
+        req.add_header("npm-auth-type", "web")
         req.add_header("content-type", "application/json")
     return req
-
-
-def start():
-    body = json.dumps({"hostname": os.environ.get("COMPUTERNAME", "agent")}).encode()
-    with urllib.request.urlopen(_req(f"{REGISTRY}/-/v1/login", data=body, method="POST")) as r:
-        payload = json.load(r)
-    print(payload["loginUrl"])
-    print(payload["doneUrl"])
 
 
 def npmrc_write(token):
@@ -68,34 +60,45 @@ def npmrc_write(token):
         out.append(line)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(out) + "\n")
-    print("wrote ~/.npmrc")
 
 
-def poll(done_url, timeout_s=1800):
+def main(timeout_s=2400):
+    body = json.dumps({"hostname": os.environ.get("COMPUTERNAME", "agent")}).encode()
+    with opener.open(_req(f"{REGISTRY}/-/v1/login", data=body, method="POST")) as r:
+        payload = json.load(r)
+    login_url, done = payload["loginUrl"], payload["doneUrl"]
+
     deadline = time.time() + timeout_s
+    ok_polls = 0
+    announced = False
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(_req(done_url)) as r:
+            with opener.open(_req(done)) as r:
                 if r.status == 200:
                     token = json.load(r).get("token")
                     if token:
                         npmrc_write(token)
-                        print("AUTHENTICATED")
+                        if not announced:
+                            print(f"LOGIN_URL {login_url}", flush=True)
+                        print("AUTHENTICATED", flush=True)
                         return 0
-                wait = int(r.headers.get("retry-after") or 5)
+                ok_polls += 1
         except urllib.error.HTTPError as e:
-            if e.code in (202,):
-                wait = int(e.headers.get("retry-after") or 5)
+            if e.code == 202:
+                ok_polls += 1
             else:
-                print(f"HTTP {e.code}: {e.read()[:300]!r}")
+                print(f"DEAD after {ok_polls} good polls: HTTP {e.code}", flush=True)
                 return 1
-        time.sleep(max(2, min(wait, 15)))
-    print("TIMED OUT waiting for the click")
+
+        if ok_polls == PROVE_POLLS and not announced:
+            # Only now is the link worth a human's click.
+            print(f"LOGIN_URL {login_url}", flush=True)
+            announced = True
+        time.sleep(INTERVAL)
+
+    print(f"TIMED OUT after {ok_polls} good polls", flush=True)
     return 1
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "start":
-        start()
-    else:
-        sys.exit(poll(sys.argv[2]))
+    sys.exit(main())
