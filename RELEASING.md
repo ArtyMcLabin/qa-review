@@ -55,7 +55,7 @@ GET  <doneUrl>   -> 202 + Retry-After while pending, 200 {"token": "npm_..."} on
 
 Print `loginUrl` to Arty verbatim, poll `doneUrl` in the background, and write the
 token to `~/.npmrc` as `//registry.npmjs.org/:_authToken=<token>`. Working script:
-`scratchpad/npm-weblogin.py` (`start` / `poll <doneUrl>`).
+`scripts/npm-weblogin.py` (`start` / `poll <doneUrl>`).
 
 🚨 npm is restricting **tokens that bypass 2FA**. If publishing later fails with a
 message naming a *token type* ("granular access token with bypass 2fa enabled is
