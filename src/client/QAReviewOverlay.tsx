@@ -254,6 +254,8 @@ export function QAReviewOverlay({
   const [finished, setFinished] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [refCopied, setRefCopied] = React.useState(false);
+  /** Reference lines collected by right-clicking "Copy ref". See `appendRef`. */
+  const [refBuffer, setRefBuffer] = React.useState<string[]>([]);
   const [save, setSave] = React.useState<SaveState>({ status: "idle" });
   // Minimized-to-bubble state (replaces the old 3s peek).
   const [minimized, setMinimized] = React.useState(false);
@@ -816,19 +818,59 @@ export function QAReviewOverlay({
     );
   }, [buildPayload]);
 
-  const copyRef = React.useCallback(() => {
-    if (!current) return;
-    const line = formatQARef(target, current.id, current.title);
-    navigator.clipboard.writeText(line).then(
+  /**
+   * Write `text` to the clipboard, falling back to a prompt when the API is
+   * unavailable (insecure origin, permission denied). One place, so the single
+   * and the collected copy cannot diverge.
+   */
+  const writeClipboard = React.useCallback((text: string, label: string) => {
+    navigator.clipboard.writeText(text).then(
       () => {
         setRefCopied(true);
         window.setTimeout(() => setRefCopied(false), 1500);
       },
       () => {
-        window.prompt("Copy QA reference:", line);
+        window.prompt(label, text);
       },
     );
-  }, [current, target]);
+  }, []);
+
+  const copyRef = React.useCallback(() => {
+    if (!current) return;
+    const line = formatQARef(target, current.id, current.title);
+    // A plain click REPLACES, and therefore also ends a collection run - so the
+    // way out of a half-built list is the same button you started with.
+    setRefBuffer([]);
+    writeClipboard(line, "Copy QA reference:");
+  }, [current, target, writeClipboard]);
+
+  /**
+   * 🚨 COLLECT SEVERAL REFERENCES, PASTE THEM ONCE (Arty 2026-08-09: "qa
+   * interactive component - should have right click option on 'copy ref' button,
+   * to include an 'append to current clipboard'. Which should pretty much let us
+   * collect multiple references together to be able to paste them all in one.
+   * This way I would be able to copy multiple references in a single sweep and
+   * then paste them all together into claude code").
+   *
+   * 🚨 IT ACCUMULATES IN THE PANEL, NOT BY READING THE CLIPBOARD.
+   * `navigator.clipboard.readText()` is the obvious implementation and the wrong
+   * one: it needs a separate permission that Firefox does not grant to a page at
+   * all, and on a grant it would append to WHATEVER is on the clipboard -
+   * including a password manager's payload or the pasta the operator copied a
+   * minute ago off this very board. Keeping the list in the panel means the
+   * button can only ever append references it produced itself.
+   */
+  const appendRef = React.useCallback(() => {
+    if (!current) return;
+    const line = formatQARef(target, current.id, current.title);
+    setRefBuffer((prev) => {
+      // Right-clicking the same item twice is a slip, not a request for a
+      // duplicate - so it is idempotent rather than additive.
+      const next = prev.includes(line) ? prev : [...prev, line];
+      writeClipboard(next.join("\n"), "Copy QA references:");
+      return next;
+    });
+  }, [current, target, writeClipboard]);
 
   // Persist the completed run as a session snapshot via the submit endpoint.
   const saveToDb = React.useCallback(async () => {
@@ -962,9 +1004,17 @@ export function QAReviewOverlay({
                 type="button"
                 onClick={() => {
                   setFinished(false);
-                  setIndex(0);
+                  // 🚨 THE LAST ITEM, NOT THE FIRST (Arty 2026-08-09: "Clicking
+                  // on 'Back to review' in the QA interactive panel should go to
+                  // the last item and not to the first item - as if it was undo
+                  // instead of restart"). You press this having just finished,
+                  // because of something about the item you just judged. Landing
+                  // on item 1 of forty makes the button a restart, and getting
+                  // back to where you were means clicking Next until you arrive.
+                  setIndex(Math.max(0, roundTotal - 1));
                 }}
                 className="qar-btn-outline"
+                data-qatip="Go back to the last item you reviewed"
               >
                 Back to review
               </button>
@@ -1174,10 +1224,21 @@ export function QAReviewOverlay({
           <button
             type="button"
             onClick={copyRef}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              appendRef();
+            }}
             className="qar-pick-btn"
-            data-qatip="Copy a reference line (codename + target + item id) for chat/issues"
+            data-qatip="Click: copy this item's reference line. Right-click: ADD it to the ones already collected, so several can be pasted at once."
           >
-            <ClipboardCopy size={12} /> {refCopied ? "Copied!" : "Copy ref"}
+            <ClipboardCopy size={12} />{" "}
+            {refCopied
+              ? refBuffer.length > 1
+                ? `Copied ${refBuffer.length}!`
+                : "Copied!"
+              : refBuffer.length > 0
+                ? `Copy ref (${refBuffer.length} collected)`
+                : "Copy ref"}
           </button>
         </div>
 

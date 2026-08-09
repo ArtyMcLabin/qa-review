@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.8 - 2026-08-09
+
+- BACK TO REVIEW IS AN UNDO, NOT A RESTART: the finish panel's "Back to review"
+  sent the reviewer to item 1. You press it having just finished, because of
+  something about the item you just judged, so on a forty-item board getting
+  back to where you were meant clicking Next thirty-nine times. It now opens the
+  LAST item of the round.
+- COLLECT SEVERAL REFERENCES FOR ONE PASTE: right-clicking "Copy ref" ADDS this
+  item's reference line to the ones already collected and puts the whole list on
+  the clipboard, so a sweep of a board can be pasted into a chat in one go. A
+  plain click still copies just this item, and also ends the collection, so
+  there is a way out of a half-built list. The button reports how many are
+  collected. Right-clicking the same item twice is idempotent.
+  It does NOT call navigator.clipboard.readText(): appending to "whatever is on
+  the clipboard" would need a permission Firefox never grants a page, and on a
+  grant it would happily append a password manager's payload or whatever the
+  reviewer copied a minute earlier. The list lives in the panel, so the button
+  can only ever append references it produced itself.
+
 ## 0.3.7 - 2026-07-30
 
 - MOBILE PREVIEW SCROLLS TO THE ITEM: the phone-frame iframe loaded each page
