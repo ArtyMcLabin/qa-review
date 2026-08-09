@@ -66,10 +66,35 @@ they are at the keyboard, and tell them the link is good for about five minutes.
 Four links were burned in one session learning this, each handed over with a
 different confident and wrong explanation.
 
-🚨 npm is restricting **tokens that bypass 2FA**. If publishing later fails with a
-message naming a *token type* ("granular access token with bypass 2fa enabled is
-required"), re-logging in cannot fix it - that needs a granular token minted in the
-npm UI. Different failure, different remedy.
+## 🚨 Logging in is NOT enough to publish, and no email will ever arrive
+
+Confirmed end-to-end 2026-08-09. After a fully successful web login (`npm whoami`
+-> `artymclabin`), `npm publish` still returns:
+
+```
+npm error code E403
+npm error 403 Forbidden - PUT https://registry.npmjs.org/@artymclabin%2fqa-review
+npm error 403 Two-factor authentication or granular access token with bypass 2fa
+              enabled is required to publish packages.
+```
+
+**Login 2FA and publish 2FA are different mechanisms on this account.** Login
+sends an email OTP to `npm@artymclabin.com` (which forwards into the Gmail account
+an agent can read, so an agent CAN complete a login unaided). Publish does not
+send anything: it wants a TOTP authenticator code (`npm publish --otp=<code>`) or a
+granular token with bypass-2FA. Waiting on the inbox for a publish OTP is watching
+a mailbox that will never receive one - verified with three searches over the
+window.
+
+So an agent can get this account **logged in** on its own, and cannot **publish**
+on its own. Publishing needs either Arty's authenticator app, or a decision from
+him to mint a bypass-2FA token - and that second one is a security posture change
+npm is actively deprecating (account changes Aug 2026, direct publishing Jan 2027),
+so it is his call to make, not one to route around. Do not re-dispatch a browser
+agent to mint one after it has declined: that is shopping for a different answer to
+the same question.
+
+When a release is blocked here, vendor the tarball (below) and ask him.
 
 ## Fallback: vendor the tarball
 
