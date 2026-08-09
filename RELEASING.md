@@ -33,16 +33,29 @@ been published, while `0.3.7` had been live since 2026-08-02.
 
 ## Re-authenticating (2026-08-09)
 
-The token in `~/.npmrc` expired silently; nothing surfaces it until a publish. The
-web flow needs exactly one click from Arty and no password in the terminal:
+The token in `~/.npmrc` expired silently; nothing surfaces it until a publish. Web
+login needs exactly one click from Arty and no password in any terminal - but an
+agent must NOT drive it with the CLI.
 
-```bash
-npm login --scope=@artymclabin --auth-type=web --registry=https://registry.npmjs.org/
+🚨 **`npm login --auth-type=web` is a trap in any non-TTY shell** (which is every
+backgrounded agent shell). It prints a perfectly real
+`Login at: https://www.npmjs.com/login?next=/login/cli/<uuid>`, then - because it
+cannot open a browser - falls back to the legacy `Username:` prompt and dies on
+EOF. Nothing is left listening, so the click accomplishes nothing and the URL you
+handed over was dead before the human read it. Holding stdin open with a pipe does
+not help; a pipe is still not a TTY. Observed twice, 2026-08-09.
+
+Drive the same handshake directly instead, and the poller is yours:
+
+```
+POST https://registry.npmjs.org/-/v1/login    headers: npm-auth-type: web
+     body {"hostname": "<machine>"}           -> {loginUrl, doneUrl}
+GET  <doneUrl>   -> 202 + Retry-After while pending, 200 {"token": "npm_..."} on approval
 ```
 
-It prints `Login at: https://www.npmjs.com/login?next=/login/cli/<uuid>` and waits.
-**Print that URL to Arty verbatim** - he opens it, approves, and the CLI writes the
-token itself. An agent can drive everything except the click.
+Print `loginUrl` to Arty verbatim, poll `doneUrl` in the background, and write the
+token to `~/.npmrc` as `//registry.npmjs.org/:_authToken=<token>`. Working script:
+`scratchpad/npm-weblogin.py` (`start` / `poll <doneUrl>`).
 
 🚨 npm is restricting **tokens that bypass 2FA**. If publishing later fails with a
 message naming a *token type* ("granular access token with bypass 2fa enabled is
