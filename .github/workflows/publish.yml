@@ -1,0 +1,65 @@
+# Publish to npm with TRUSTED PUBLISHING (OIDC) - no token anywhere.
+#
+# 🚨 WHY THIS EXISTS. Publishing from a laptop needs a credential, and on this
+# account every credential route is a dead end: there is no authenticator app, so
+# `npm publish` answers "Two-factor authentication or granular access token with
+# bypass 2fa enabled is required"; web-login tokens are accepted for `whoami` and
+# refused for writes, and expire within a day anyway; `npm token create` asks for
+# the account password. The remaining option was a granular token with 2FA bypass
+# sitting in ~/.npmrc - a standing credential any process on the machine could
+# publish with, which npm is also killing for publishing in Jan 2027.
+#
+# Trusted publishing removes the credential instead of storing one. npm trusts
+# THIS repository and THIS workflow file; the runner mints a short-lived OIDC
+# token per run. Nothing to expire, nothing to re-mint, nothing to leak, and no
+# 2027 cliff.
+#
+# 🚨 The npm side must name this file exactly (`publish.yml`) and this repo.
+# Renaming or moving this file silently breaks publishing - npm will refuse a run
+# it does not recognise. Change it in both places or not at all.
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  # So a release can be re-run without inventing a tag.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The whole mechanism. Without id-token the runner cannot mint the OIDC token
+  # and npm falls back to asking for a credential that does not exist.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 🚨 pnpm, because the lockfile in this repo is pnpm-lock.yaml and there is
+      # no package-lock.json - `npm ci` would fail outright on checkout. The
+      # PUBLISH itself still goes through npm, which is what holds the OIDC
+      # credential exchange; pnpm only installs and runs the gates.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
+
+      # Trusted publishing needs npm >= 11.5.1; the runner image ships older.
+      - run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      # The gates that used to be run by hand before a manual publish. A release
+      # that skips them is how a broken overlay reaches every consumer at once.
+      - run: npm test
+      - run: npm run build
+
+      - run: npm publish --access public
