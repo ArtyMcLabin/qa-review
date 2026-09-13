@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // 0.3.1 refinements: journey loading indicator, device-approve toggle (with
 // real-time unset persistence), auto-bubble on viewport switch (hysteresis),
 // pick-mode multi-select semantics, and instant tooltips.
@@ -7,6 +8,7 @@ import { toggleDevice, isFullyApproved } from "../src/client/device.js";
 import {
   nextMinimized,
   pickedElementRef,
+  describePickedElement,
   shouldExitPickMode,
   type BubbleEvent,
 } from "../src/client/QAReviewOverlay.js";
@@ -133,9 +135,50 @@ describe("element-pick multi-select", () => {
   });
 
   it("picked reference text: normalized label, truncated, tag fallback", () => {
-    expect(pickedElementRef("  Buy   now ", "BUTTON")).toBe(" «Buy now» ");
-    expect(pickedElementRef("", "SECTION")).toBe(" «section» ");
-    expect(pickedElementRef("x".repeat(80), "P")).toBe(` «${"x".repeat(48)}» `);
+    expect(pickedElementRef({ textContent: "  Buy   now ", tagName: "BUTTON" })).toBe(
+      " «Buy now» ",
+    );
+    expect(pickedElementRef({ textContent: "", tagName: "SECTION" })).toBe(" «section» ");
+    expect(pickedElementRef({ textContent: "x".repeat(80), tagName: "P" })).toBe(
+      ` «${"x".repeat(48)}» `,
+    );
+  });
+
+  // A form control has no textContent, and every one of them used to come back as
+  // " «input» ". Each fallback below is the thing a reviewer would actually say.
+  it("names a form control by its label, not by its tag", () => {
+    expect(pickedElementRef({ tagName: "INPUT", placeholder: "Steam page" })).toBe(
+      " «Steam page» ",
+    );
+    expect(
+      pickedElementRef({ tagName: "INPUT", ariaLabel: "Discord invite", placeholder: "url" }),
+    ).toBe(" «Discord invite» ");
+    expect(pickedElementRef({ tagName: "TEXTAREA", labelText: "Anything else" })).toBe(
+      " «Anything else» ",
+    );
+    expect(pickedElementRef({ tagName: "INPUT", value: "https://store.steam" })).toBe(
+      " «https://store.steam» ",
+    );
+    expect(pickedElementRef({ tagName: "IMG", alt: "Team photo" })).toBe(" «Team photo» ");
+    expect(pickedElementRef({ tagName: "INPUT", name: "wishlists" })).toBe(" «wishlists» ");
+    expect(pickedElementRef({ tagName: "INPUT" })).toBe(" «input» ");
+  });
+
+  it("reads a live control's label out of the DOM", () => {
+    document.body.innerHTML = `
+      <label for="steam">Steam page</label>
+      <input id="steam" placeholder="store.steampowered.com" />
+      <label>Wrapped label<textarea name="notes"></textarea></label>
+      <button>Send it</button>
+    `;
+    const input = document.getElementById("steam") as HTMLInputElement;
+    expect(pickedElementRef(describePickedElement(input))).toBe(" «Steam page» ");
+
+    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+    expect(pickedElementRef(describePickedElement(textarea))).toBe(" «Wrapped label» ");
+
+    const button = document.querySelector("button") as HTMLButtonElement;
+    expect(pickedElementRef(describePickedElement(button))).toBe(" «Send it» ");
   });
 });
 

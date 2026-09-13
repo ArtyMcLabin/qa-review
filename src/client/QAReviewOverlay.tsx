@@ -103,10 +103,81 @@ export function isClickGesture(dx: number, dy: number): boolean {
 }
 
 /** Note-reference text for a picked element: « label » (truncated) or tag. */
-export function pickedElementRef(textContent: string | null, tagName: string): string {
+export interface PickedElementDescriptor {
+  textContent?: string | null;
+  tagName: string;
+  /** aria-label, or the aria-labelledby target's text. */
+  ariaLabel?: string | null;
+  /** Text of an associated <label>, whether wrapping or `for=`-linked. */
+  labelText?: string | null;
+  placeholder?: string | null;
+  alt?: string | null;
+  title?: string | null;
+  /** Current value, for a control the reviewer has already filled in. */
+  value?: string | null;
+  name?: string | null;
+}
+
+/**
+ * 🚨 A form control has no `textContent`, so reading only that made every input,
+ * textarea and select come out as its bare tag name: a reviewer picking seven link
+ * fields got seven « input » refs with no way to say which row they meant. The
+ * order below is "what a human would call it" - its own text, then the accessible
+ * name, then the label a designer wrote, then what it holds - and the tag name only
+ * when the element genuinely has no name at all.
+ */
+export function pickedElementRef(el: PickedElementDescriptor): string {
+  const clean = (v: string | null | undefined) => (v || "").replace(/\s+/g, " ").trim();
   const label =
-    (textContent || "").replace(/\s+/g, " ").trim().slice(0, 48) || tagName.toLowerCase();
+    [
+      clean(el.textContent),
+      clean(el.ariaLabel),
+      clean(el.labelText),
+      clean(el.placeholder),
+      clean(el.alt),
+      clean(el.title),
+      clean(el.value),
+      clean(el.name),
+    ]
+      .find((c) => c.length > 0)
+      ?.slice(0, 48) || el.tagName.toLowerCase();
   return ` «${label}» `;
+}
+
+/** Read a live DOM element into the descriptor above. */
+export function describePickedElement(el: Element): PickedElementDescriptor {
+  const labelledBy = el.getAttribute("aria-labelledby");
+  const labelledByText = labelledBy
+    ? labelledBy
+        .split(/\s+/)
+        .map((id) => el.ownerDocument?.getElementById(id)?.textContent ?? "")
+        .join(" ")
+    : null;
+
+  // A control's label is either an ancestor <label> or one pointing at its id.
+  let labelText: string | null = null;
+  const id = el.getAttribute("id");
+  if (id) {
+    const escaped = id.replace(/["\\]/g, "\\$&");
+    labelText = el.ownerDocument?.querySelector(`label[for="${escaped}"]`)?.textContent ?? null;
+  }
+  if (!labelText) labelText = el.closest("label")?.textContent ?? null;
+
+  const isControl = ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+
+  return {
+    // A control's own textContent is empty anyway; skipping it explicitly keeps the
+    // intent readable rather than relying on that emptiness.
+    textContent: isControl ? null : el.textContent,
+    tagName: el.tagName,
+    ariaLabel: el.getAttribute("aria-label") || labelledByText,
+    labelText,
+    placeholder: el.getAttribute("placeholder"),
+    alt: el.getAttribute("alt"),
+    title: el.getAttribute("title"),
+    value: isControl ? ((el as HTMLInputElement).value ?? null) : null,
+    name: el.getAttribute("name"),
+  };
 }
 
 /**
@@ -489,7 +560,7 @@ export function QAReviewOverlay({
       if (!el || cardRef.current?.contains(el)) return; // ignore the panel itself
       e.preventDefault();
       e.stopPropagation();
-      const ref = pickedElementRef(el.textContent, el.tagName);
+      const ref = pickedElementRef(describePickedElement(el));
       const ta = noteRef.current;
       if (ta) {
         const s = ta.selectionStart ?? note.length;
