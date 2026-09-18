@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.10 - 2026-09-19
+
+- OUTSIDE TAP MINIMIZES THE PANEL, ON MOBILE: the only way to collapse the
+  card used to be the small minimize button in its header, and hitting a
+  small target on a phone is real friction. A pointerdown anywhere outside
+  the card now minimizes it too, scoped to mobile-width viewports (desktop
+  keeps the explicit button only, since a stray click outside a small
+  floating panel on a mouse is far more likely incidental than intentional).
+  Uses a capture-phase listener plus a contains() check against the card, so
+  dragging the card by its header (which also starts with a pointerdown,
+  from inside the card) is unaffected.
+
+## 0.3.9 - 2026-09-13
+
+- PICKED FORM CONTROLS ARE NAMED BY LABEL, NOT BY TAG: a form control has no
+  textContent, so the element picker fell through to `tagName.toLowerCase()`
+  for every input, textarea and select. Picking the seven link fields on the
+  GameReady pitch page produced seven identical `<input>` references, with
+  no way for the reviewer to say which row they meant. The picker now reads
+  the name a human would: own text, accessible name (aria-label /
+  aria-labelledby), the associated `<label>` (including a wrapping label),
+  placeholder, alt, title, current value, name attribute, and only then the
+  tag.
+
 ## 0.3.8 - 2026-08-09
 
 - BACK TO REVIEW IS AN UNDO, NOT A RESTART: the finish panel's "Back to review"

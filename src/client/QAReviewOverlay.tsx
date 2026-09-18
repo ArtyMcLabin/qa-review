@@ -415,6 +415,29 @@ export function QAReviewOverlay({
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
+  // OUTSIDE TAP TO MINIMIZE (mobile only): pixel-hunting for the small
+  // minimize button is real friction on a phone, so a tap anywhere outside
+  // the card collapses it to the bubble - same result as the button, far
+  // cheaper to hit. Scoped to mobile width: on desktop a stray click outside
+  // a small floating panel is much more likely incidental than intentional.
+  // Capture phase + native listener so it fires ahead of (and regardless of)
+  // any stopPropagation on the underlying page, and a pointerdown that starts
+  // INSIDE the card (e.g. dragging the header) is excluded by the contains()
+  // check, so dragging is unaffected.
+  React.useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    if (!active || finished || minimized || mobilePreview) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!window.matchMedia(`(max-width: ${AUTO_BUBBLE_MAX_WIDTH_PX}px)`).matches) return;
+      const target = e.target as Node | null;
+      if (cardRef.current && target && !cardRef.current.contains(target)) {
+        setMinimized(true);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [active, finished, minimized, mobilePreview]);
+
   // Hydrate verdicts and LAND on the first outstanding item. The DURABLE
   // server ledger is the source of truth; localStorage is only a fast cache.
   // 🚨 The store NEVER pre-approves (no seed). The round derives from
