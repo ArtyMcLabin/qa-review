@@ -42,8 +42,8 @@ describe("fingerprint (NOT-ALTERED poka-yoke)", () => {
     );
   });
 
-  it("anchored items hash the element innerText; missing anchor -> null (no judgement)", () => {
-    const el = { innerText: "  Rendered   copy " } as unknown as HTMLElement;
+  it("anchored items hash the element textContent; missing anchor -> null (no judgement)", () => {
+    const el = { textContent: "  Rendered   copy " } as unknown as HTMLElement;
     const doc = {
       querySelector: (sel: string) => (sel === "#hit" ? el : null),
     } as unknown as Document;
@@ -51,6 +51,24 @@ describe("fingerprint (NOT-ALTERED poka-yoke)", () => {
       fingerprintText("Rendered copy"),
     );
     expect(itemFingerprint({ id: "a", title: "A", selector: "#miss" }, doc)).toBeNull();
+  });
+
+  it("reads textContent even when innerText is stale/narrower (closed <details> regression, Arty 2026-09-24)", () => {
+    // innerText excludes anything not laid out - which is exactly what a
+    // COLLAPSED native <details> does to its own body. An anchor on the
+    // answer paragraph inside one would fingerprint only the always-visible
+    // summary forever, so "NOT ALTERED" could never detect an edited answer.
+    // The fingerprint must be blind to that: same words, open or closed.
+    const el = {
+      innerText: "What if the campaign doesn't raise enough?", // summary only, collapsed
+      textContent: "What if the campaign doesn't raise enough? Both outcomes happen, and both are good.",
+    } as unknown as HTMLElement;
+    const doc = { querySelector: () => el } as unknown as Document;
+    const fp = itemFingerprint({ id: "a", title: "A", selector: "#hit" }, doc);
+    expect(fp).toBe(
+      fingerprintText("What if the campaign doesn't raise enough? Both outcomes happen, and both are good."),
+    );
+    expect(fp).not.toBe(fingerprintText("What if the campaign doesn't raise enough?"));
   });
 
   it("badge status: unchanged when hashes match, changed when they differ, null when unknown", () => {
