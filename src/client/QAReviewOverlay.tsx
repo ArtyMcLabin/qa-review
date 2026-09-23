@@ -1078,9 +1078,23 @@ export function QAReviewOverlay({
                   {save.status === "saving"
                     ? "Saving…"
                     : save.status === "ok"
-                      ? "Saved to database ✓"
-                      : "Save review to database"}
+                      ? "Snapshot saved ✓"
+                      : "Save session snapshot (optional)"}
                 </button>
+                {/* 🚨 Static caption, NOT another data-qatip (Arty 2026-09-24, reviewing
+                    on mobile): the disambiguation between "your verdicts are already
+                    saved" and "this button saves something else" previously lived ONLY
+                    in a hover tooltip, invisible on touch. "Why does it give me the
+                    save button if it also says it's saved automatically? ... The
+                    manual button should only be there if it wasn't saved
+                    automatically." The two saves are genuinely different things (the
+                    per-item ledger vs. an optional whole-run snapshot for history), so
+                    the fix is making that visible everywhere, not hiding the button. */}
+                {save.status !== "ok" && (
+                  <p className="qar-finish-autosaved" style={{ marginTop: 4 }}>
+                    Your verdicts above are already saved - this only logs a snapshot of the whole run.
+                  </p>
+                )}
                 {save.status === "error" && <p className="qar-warn">{save.message}</p>}
               </>
             )}
