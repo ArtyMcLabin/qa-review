@@ -1,13 +1,24 @@
 # Releasing `@artymclabin/qa-review`
 
+🚨 **A release is a TAG PUSH, nothing else (since 0.3.8, 2026-08-12).**
+`.github/workflows/publish.yml` publishes over npm trusted publishing (OIDC): no
+token, no login, no authenticator code, no human. Never run `npm publish` from a
+laptop and never ask Arty for a code - he has no authenticator app, and asking
+him for one sent a 2026-10-07 session down a dead end this file used to document.
+
 ```bash
 npm test && npm run build
-# bump "version" in package.json + add a CHANGELOG.md section
-npm publish --access public
+# bump "version" in package.json + add a CHANGELOG.md section, commit, push
+git tag vX.Y.Z && git push origin vX.Y.Z    # the workflow publishes in ~40s
+gh run list -L 1                            # confirm success
+npm view @artymclabin/qa-review version     # confirm the registry has it
 ```
 
 Then point consumers at the new version (`GR_NextJS/package.json`, and any other
 repo mounting `QAReviewOverlay`).
+
+Everything below the next heading is the pre-OIDC history (manual login, vendored
+tarballs). Kept for the traps it records; it is NOT the release procedure.
 
 ## 🚨 A 404 on PUT is an AUTH failure, not a missing package
 
