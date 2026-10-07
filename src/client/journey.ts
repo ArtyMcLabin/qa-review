@@ -168,7 +168,18 @@ export async function fetchPendingCounts(
   stateUrl: string,
   pages: readonly QAJourneyPage[],
 ): Promise<Record<string, number>> {
+  const maps = await fetchJourneyVerdicts(stateUrl, pages);
   const out: Record<string, number> = {};
+  for (const p of pages) out[p.target] = countUnverdicted(p.itemIds, maps[p.target]);
+  return out;
+}
+
+/** Ledger verdict map per journey page target (null = fetch failed). */
+export async function fetchJourneyVerdicts(
+  stateUrl: string,
+  pages: readonly QAJourneyPage[],
+): Promise<Record<string, VerdictMap | null>> {
+  const out: Record<string, VerdictMap | null> = {};
   await Promise.all(
     pages.map(async (p) => {
       let map: VerdictMap | null = null;
@@ -183,8 +194,42 @@ export async function fetchPendingCounts(
       } catch {
         map = null;
       }
-      out[p.target] = countUnverdicted(p.itemIds, map);
+      out[p.target] = map;
     }),
   );
   return out;
+}
+
+export interface VerdictTally {
+  approved: number;
+  rejected: number;
+  total: number;
+}
+
+/**
+ * Approve / reject / item totals over a whole journey (0.3.13). Counts only the
+ * page's declared `itemIds`, so stale ledger rows for retired items never
+ * inflate the numbers. `overrides` replaces a page's ledger map with live state
+ * (the current page's in-memory verdicts are fresher than any fetch).
+ *
+ * 🚨 Arty 2026-10-07: the panel said "1 approved, 0 rejected" at the end of a
+ * ten-page journey he had just walked through with 12 verdicts - the count was
+ * page-scoped and unlabeled, so it read as the whole review.
+ */
+export function tallyJourney(
+  pages: readonly QAJourneyPage[],
+  maps: Readonly<Record<string, VerdictMap | null | undefined>>,
+  overrides: Readonly<Record<string, VerdictMap>> = {},
+): VerdictTally {
+  const t: VerdictTally = { approved: 0, rejected: 0, total: 0 };
+  for (const p of pages) {
+    const map = overrides[p.target] ?? maps[p.target];
+    t.total += p.itemIds.length;
+    for (const id of p.itemIds) {
+      const v = map?.[id]?.verdict;
+      if (v === "approve") t.approved++;
+      else if (v === "reject") t.rejected++;
+    }
+  }
+  return t;
 }

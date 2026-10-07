@@ -22,6 +22,8 @@ export {
   nextPendingPage,
   buildJourneyNavUrl,
   fetchPendingCounts,
+  fetchJourneyVerdicts,
+  tallyJourney,
   resolveFinishAction,
   journeyFinishView,
   shouldPrefetch,
@@ -32,6 +34,7 @@ export {
   type FinishAction,
   type QAJourneyConfig,
   type QAJourneyPage,
+  type VerdictTally,
 } from "./journey.js";
 export {
   normalizeText,

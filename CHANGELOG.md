@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.13 - 2026-10-07
+
+- JOURNEY-WIDE TOTALS: in a cross-page journey the footer and the finish card
+  now show approve/reject totals across EVERY page (`whole journey: N approved
+  · M rejected · T items`), next to the page line (now labelled `this page,
+  all runs`). Previously the only ledger count was page-scoped and unlabelled,
+  so at the end of a ten-page journey with 12 verdicts it read "1 approved".
+  New exports: `fetchJourneyVerdicts`, `tallyJourney`, `VerdictTally`.
+- RUN SNAPSHOT SAVES ITSELF: when `submitUrl` is set, the whole-run snapshot
+  is POSTed automatically once per finished round. The "Save session
+  snapshot (optional)" button is gone - it asked the reviewer for a decision
+  with no stake in it. A failed save shows as a warning line.
+
 ## 0.3.10 - 2026-09-19
 
 - OUTSIDE TAP MINIMIZES THE PANEL, ON MOBILE: the only way to collapse the

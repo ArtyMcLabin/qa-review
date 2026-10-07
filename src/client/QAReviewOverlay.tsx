@@ -55,6 +55,7 @@ import { QAStore, type VerdictMap } from "./store.js";
 import {
   buildJourneyNavUrl,
   ensurePrefetchLink,
+  fetchJourneyVerdicts,
   fetchPendingCounts,
   isPrefetchFresh,
   journeyFinishView,
@@ -62,6 +63,7 @@ import {
   nextPendingPage,
   resolveFinishAction,
   shouldPrefetch,
+  tallyJourney,
   type QAJourneyConfig,
   type QAJourneyPage,
 } from "./journey.js";
@@ -337,6 +339,8 @@ export function QAReviewOverlay({
   // Journey: pending counts (for the journey-complete panel only - page-level
   // completion navigates IMMEDIATELY with no interstitial).
   const [journeyCounts, setJourneyCounts] = React.useState<Record<string, number> | null>(null);
+  // Ledger maps of every journey page, for journey-wide approve/reject totals.
+  const [journeyMaps, setJourneyMaps] = React.useState<Record<string, VerdictMap | null> | null>(null);
   const [journeyComplete, setJourneyComplete] = React.useState(false);
   // The journey page a full-page navigation is in flight to (loading label).
   const [navigatingTo, setNavigatingTo] = React.useState<QAJourneyPage | null>(null);
@@ -851,6 +855,20 @@ export function QAReviewOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, finished, inJourney, index, roundTotal]);
 
+  // Journey-wide totals: load every page's ledger once on activation and
+  // again when the round finishes (other tabs/sessions may have written).
+  React.useEffect(() => {
+    if (!active || !inJourney) return;
+    let cancelled = false;
+    void fetchJourneyVerdicts(stateUrl ?? DEFAULT_STATE_URL, journey!.pages).then((maps) => {
+      if (!cancelled) setJourneyMaps(maps);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, inJourney, finished]);
+
   // Journey: the moment this page's round is done, resolve the next step and
   // navigate IMMEDIATELY (no interstitial, no success popup). Uses the
   // PREFETCHED counts when fresh (instant hop); falls back to an on-demand
@@ -984,6 +1002,22 @@ export function QAReviewOverlay({
     }
   }, [submitUrl, buildPayload]);
 
+  // 🚨 The run snapshot saves ITSELF when a round finishes (0.3.13). It used to
+  // be a "Save session snapshot (optional)" button, which asked the reviewer to
+  // make a decision with no stake in it: Arty 2026-10-07, "Either save it or
+  // don't save it. If it's useful, save it... Why did you ask me to click that
+  // button instead?" Once per finish; a failure surfaces as a warning only.
+  const snapshotDoneRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!finished) {
+      snapshotDoneRef.current = false;
+      return;
+    }
+    if (!submitUrl || snapshotDoneRef.current) return;
+    snapshotDoneRef.current = true;
+    void saveToDb();
+  }, [finished, submitUrl, saveToDb]);
+
   if (!active || !hydrated || typeof document === "undefined") return null;
 
   // Inline CSS-variable overrides for the injected default theme.
@@ -997,6 +1031,11 @@ export function QAReviewOverlay({
   // LEDGER (all-time on this page) vs THIS ROUND (acted on in this run).
   const approved = Object.values(results).filter((r) => r.verdict === "approve").length;
   const rejected = Object.values(results).filter((r) => r.verdict === "reject").length;
+  const liveMap: VerdictMap = Object.fromEntries(
+    Object.values(results).map((r) => [r.id, { verdict: r.verdict as QAVerdict }]),
+  );
+  const journeyTally =
+    inJourney && journeyMaps ? tallyJourney(journey!.pages, journeyMaps, { [target]: liveMap }) : null;
   const sessionApproved = Object.values(sessionVerdicts).filter((v) => v === "approve").length;
   const sessionRejected = Object.values(sessionVerdicts).filter((v) => v === "reject").length;
 
@@ -1035,8 +1074,17 @@ export function QAReviewOverlay({
             className="qar-finish-alltime"
             data-qatip="Ledger totals for this page across all runs (durable review database)"
           >
-            all-time on this page: {approved} approved · {rejected} rejected · {total} items
+            this page, all runs: {approved} approved · {rejected} rejected · {total} items
           </p>
+          {journeyTally && (
+            <p
+              className="qar-finish-alltime"
+              data-qatip="Ledger totals across every page of this journey"
+            >
+              whole journey: {journeyTally.approved} approved · {journeyTally.rejected} rejected ·{" "}
+              {journeyTally.total} items
+            </p>
+          )}
 
           <p
             className="qar-finish-autosaved"
@@ -1065,38 +1113,8 @@ export function QAReviewOverlay({
           )}
 
           <div className="qar-finish-actions">
-            {submitUrl && (
-              <>
-                <button
-                  type="button"
-                  onClick={saveToDb}
-                  disabled={save.status === "saving" || save.status === "ok"}
-                  className="qar-btn-primary"
-                  data-qatip="Store a snapshot of this whole run (verdicts are already saved individually)"
-                >
-                  <Database size={16} aria-hidden />
-                  {save.status === "saving"
-                    ? "Saving…"
-                    : save.status === "ok"
-                      ? "Snapshot saved ✓"
-                      : "Save session snapshot (optional)"}
-                </button>
-                {/* 🚨 Static caption, NOT another data-qatip (Arty 2026-09-24, reviewing
-                    on mobile): the disambiguation between "your verdicts are already
-                    saved" and "this button saves something else" previously lived ONLY
-                    in a hover tooltip, invisible on touch. "Why does it give me the
-                    save button if it also says it's saved automatically? ... The
-                    manual button should only be there if it wasn't saved
-                    automatically." The two saves are genuinely different things (the
-                    per-item ledger vs. an optional whole-run snapshot for history), so
-                    the fix is making that visible everywhere, not hiding the button. */}
-                {save.status !== "ok" && (
-                  <p className="qar-finish-autosaved" style={{ marginTop: 4 }}>
-                    Your verdicts above are already saved - this only logs a snapshot of the whole run.
-                  </p>
-                )}
-                {save.status === "error" && <p className="qar-warn">{save.message}</p>}
-              </>
+            {save.status === "error" && (
+              <p className="qar-warn">Run snapshot not saved: {save.message}</p>
             )}
             <button
               type="button"
@@ -1565,9 +1583,15 @@ export function QAReviewOverlay({
             <span className="qar-footer-green" data-qatip="Items decided in this round">
               {decidedInRound}/{roundTotal} this round
             </span>{" "}
-            <span data-qatip="Fully approved items on this page across all runs (ledger)">
-              · {approvedCount} approved all-time
-            </span>
+            {journeyTally ? (
+              <span data-qatip="Ledger totals across every page of this journey">
+                · journey: {journeyTally.approved} approved · {journeyTally.rejected} rejected
+              </span>
+            ) : (
+              <span data-qatip="Items on this page across all runs (ledger)">
+                · this page: {approvedCount} approved · {rejected} rejected
+              </span>
+            )}
           </span>
         </div>
       </div>

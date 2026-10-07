@@ -93,7 +93,7 @@ describe("round-scoped counters", () => {
     expect(stats).toContain("1 rejected");
     expect(stats).toContain("this round");
     // ALL-TIME (ledger): prior approve of "a" included, "d" now approved.
-    expect(alltime).toContain("all-time");
+    expect(alltime).toContain("this page, all runs");
     expect(alltime).toContain("3 approved");
     expect(alltime).toContain("1 rejected");
     expect(alltime).toContain("4 items");
