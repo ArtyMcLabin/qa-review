@@ -1013,10 +1013,11 @@ export function QAReviewOverlay({
       snapshotDoneRef.current = false;
       return;
     }
-    if (!submitUrl || snapshotDoneRef.current) return;
+    // Nothing decided this round = nothing to snapshot.
+    if (!submitUrl || snapshotDoneRef.current || Object.keys(sessionVerdicts).length === 0) return;
     snapshotDoneRef.current = true;
     void saveToDb();
-  }, [finished, submitUrl, saveToDb]);
+  }, [finished, submitUrl, saveToDb, sessionVerdicts]);
 
   if (!active || !hydrated || typeof document === "undefined") return null;
 
