@@ -108,5 +108,15 @@ cp artymclabin-qa-review-X.Y.Z.tgz <consumer>/vendor/qa-review-X.Y.Z-<sha>.tgz
 ```
 
 Name the file with the source commit so the bytes are traceable to a revision.
+
+🚨 **Do NOT adopt the tarball with a plain `pnpm install` on Windows.** It re-resolves
+the lockfile for the local platform and silently DROPS every other platform's
+optional binaries (`@next/swc-linux-*` among them) - the Linux Vercel build then
+breaks. Instead patch the three qa-review entries in `pnpm-lock.yaml` by hand
+(importer `specifier`/`version`, the `packages:` key with `resolution: {integrity,
+tarball}` + `version`, the `snapshots:` key), compute the integrity as
+`sha512-` + base64(sha512(tarball bytes)), then run `pnpm install --frozen-lockfile`
+and confirm `git diff --stat pnpm-lock.yaml` touches only those lines (2026-10-07,
+0.3.13: an unchecked install removed 86 lockfile lines).
 GR_NextJS is on `vendor/qa-review-0.3.8-c51d0fd.tgz` as of 2026-08-09; put it back
 on a semver range once 0.3.8 is on the registry.
